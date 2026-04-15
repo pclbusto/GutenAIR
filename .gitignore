@@ -1,0 +1,19 @@
+# Rust
+/target
+Cargo.lock
+
+# Project Specific Artifacts
+/*.epub
+/test_book/
+/guardian_test/
+/.claude/
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS artifacts
+.DS_Store
+Thumbs.db

@@ -1,0 +1,43 @@
+[package]
+name = "gutencore"
+version = "0.1.0"
+edition = "2021"
+authors = ["GutenAI Team"]
+description = "Functional heart of GutenAIR - EPUB core management"
+
+[dependencies]
+# XML handling
+quick-xml = { version = "0.31", features = ["serialize"] }
+roxmltree = "0.19"
+
+# ZIP for import/export
+zip = "0.6"
+
+# UUID for book identifiers
+uuid = { version = "1.7", features = ["v4", "serde"] }
+
+# Time and Date
+chrono = { version = "0.4", features = ["serde"] }
+
+# HTML Sanitization and cleaning
+ammonia = "4.0"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Filesystem utilities
+walkdir = "2.5"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+path-slash = "0.2.1"
+pathdiff = "0.2.3"
+
+# HTML/XHTML Guardian dependencies
+html5ever = "0.38.0"
+markup5ever_rcdom = "0.38.0"
+
+[dev-dependencies]
+tempfile = "3.10"
