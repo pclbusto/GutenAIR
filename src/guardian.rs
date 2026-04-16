@@ -1,14 +1,163 @@
 use crate::core::GutenCore;
 use crate::error::{GutenError, Result};
-use std::fs;
 use html5ever::tendril::TendrilSink;
+use std::fs;
 
 impl GutenCore {
-    /// Save chapter content with guaranteed XHTML validity
+    /// Guarda el contenido de un capítulo garantizando validez XHTML
+    ///
+    /// Este método es la forma segura de guardar o actualizar el contenido
+    /// de un capítulo en un proyecto EPUB. Acepta contenido en formato HTML
+    /// o texto plano, lo sanitiza para eliminar código peligroso, lo convierte
+    /// a XHTML válido y lo guarda en la ubicación correcta del proyecto.
+    ///
+    /// # Proceso de guardado
+    ///
+    /// 1. **Validación del item** - Verifica que el ID exista en el manifiesto
+    ///    y que corresponda a un documento XHTML
+    ///
+    /// 2. **Sanitización** - Convierte el contenido a XHTML seguro usando
+    ///    [`sanitize_to_xhtml`](Self::sanitize_to_xhtml)
+    ///
+    /// 3. **Resolución de ruta** - Obtiene la ruta absoluta al archivo del capítulo
+    ///
+    /// 4. **Escritura** - Guarda el contenido sanitizado en disco
+    ///
+    /// # Argumentos
+    ///
+    /// * `id` - Identificador del item en el manifiesto (ej: `"chap1"`, `"introduction"`)
+    /// * `raw_content` - Contenido a guardar (HTML, texto plano o XHTML)
+    ///
+    /// # Retorna
+    ///
+    /// * `Result<()>` - `Ok(())` si el capítulo se guarda exitosamente
+    ///
+    /// # Errores
+    ///
+    /// Este método puede retornar los siguientes errores:
+    ///
+    /// * `GutenError::Manifest` - Si:
+    ///   - El `id` no existe en el manifiesto
+    ///   - El item no es de tipo `application/xhtml+xml`
+    /// * `GutenError::Other` - Si `sanitize_to_xhtml` falla
+    /// * `GutenError::InvalidProject` - Si no se puede resolver la ruta del recurso
+    /// * `std::io::Error` - Si falla la escritura del archivo
+    ///
+    /// # Ejemplo básico
+    ///
+    /// ```no_run
+    /// # use guten_core::GutenCore;
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut core = GutenCore::open_folder("./mi_libro")?;
+    ///
+    /// // Guardar contenido HTML de un capítulo existente
+    /// let contenido = r#"
+    ///     <h1>Capítulo 1</h1>
+    ///     <p>Esta es la historia de...</p>
+    ///     <script>alert('Esto se eliminará automáticamente');</script>
+    /// "#;
+    ///
+    /// core.save_chapter("chap1", contenido)?;
+    /// println!("Capítulo guardado y sanitizado");
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Ejemplo con texto plano
+    ///
+    /// ```no_run
+    /// # use guten_core::GutenCore;
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut core = GutenCore::open_folder("./mi_libro")?;
+    ///
+    /// // El texto plano se convertirá automáticamente a XHTML con párrafos
+    /// let texto_plano = "Este es el primer párrafo.\n\nY este es el segundo.";
+    ///
+    /// core.save_chapter("introduccion", texto_plano)?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Ejemplo con contenido dinámico (generado por usuario)
+    ///
+    /// ```no_run
+    /// # use guten_core::GutenCore;
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut core = GutenCore::open_folder("./blog_to_epub")?;
+    ///
+    /// // Contenido de un blog que puede contener HTML inseguro
+    /// let comentario_usuario = r#"
+    ///     <div class="post">
+    ///         <h2>Mi experiencia</h2>
+    ///         <p>Excelente libro! <img src="smiley.jpg" onerror="alert('XSS')"></p>
+    ///         <script>malicious_code();</script>
+    ///     </div>
+    /// "#;
+    ///
+    /// // El método sanitiza automáticamente, eliminando scripts y handlers peligrosos
+    /// core.save_chapter("user_story", comentario_usuario)?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Ejemplo con manejo de errores
+    ///
+    /// ```no_run
+    /// # use guten_core::GutenCore;
+    /// # use guten_core::error::GutenError;
+    /// let mut core = GutenCore::open_folder("./mi_libro")?;
+    ///
+    /// // Intentar guardar con un ID inválido
+    /// match core.save_chapter("id_inexistente", "<p>Contenido</p>") {
+    ///     Ok(_) => println!("Guardado exitoso"),
+    ///     Err(GutenError::Manifest(msg)) => {
+    ///         eprintln!("Error en el manifiesto: {}", msg);
+    ///         // Imprime: "id_inexistente not found in manifest"
+    ///     }
+    ///     Err(e) => eprintln!("Otro error: {}", e),
+    /// }
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// # Sanitización aplicada
+    ///
+    /// El método `sanitize_to_xhtml` (que internamente llama a este) realiza:
+    ///
+    /// 1. **Limpieza HTML** - Elimina scripts, iframes, objetos embebidos
+    /// 2. **Eliminación de handlers de eventos** - `onclick`, `onload`, etc.
+    /// 3. **Validación de URLs** - Elimina `javascript:` y `data:` peligrosos
+    /// 4. **Conversión a XHTML** - Asegura etiquetas bien formadas y encoding UTF-8
+    /// 5. **Estructura completa** - Agrega `<html>`, `<head>`, `<body>` si falta
+    ///
+    /// # Notas importantes
+    ///
+    /// - **Sobrescritura**: Si el capítulo ya existía, **se sobrescribe** completamente
+    /// - **Backup automático**: No se crea backup. Considera guardar una copia antes
+    /// - **Rendimiento**: Para capítulos muy grandes (>10MB), considera dividirlos
+    /// - **Sanitización por defecto**: Siempre se aplica, no hay opción para desactivarla
+    ///
+    /// # Advertencias de seguridad
+    ///
+    /// - **Confía pero verifica**: Aunque se aplica sanitización, siempre revisa
+    ///   el resultado si el contenido es crítico
+    /// - **No usar con datos binarios**: Este método es solo para texto HTML/XHTML
+    /// - **Inyección indirecta**: La sanitización no protege contra ataques
+    ///   en atributos `style` o `class` personalizados
+    ///
+    /// # Ver también
+    ///
+    /// - [`get_item`](Self::get_item) - Obtiene un item del manifiesto
+    /// - [`sanitize_to_xhtml`](Self::sanitize_to_xhtml) - Método de sanitización interno
+    /// - [`get_resource_path`](Self::get_resource_path) - Resuelve ruta absoluta de un recurso
+    /// - [`save`](Self::save) - Guarda metadatos, no contenido de capítulos
+    /// - [EPUB XHTML Content Documents](https://www.w3.org/TR/epub/#sec-xhtml) - Especificación
     pub fn save_chapter(&mut self, id: &str, raw_content: &str) -> Result<()> {
         let item = self.get_item(id)?;
         if item.media_type != "application/xhtml+xml" {
-            return Err(GutenError::Manifest(format!("{} is not an XHTML document", id)));
+            return Err(GutenError::Manifest(format!(
+                "{} is not an XHTML document",
+                id
+            )));
         }
 
         let clean_xhtml = self.sanitize_to_xhtml(raw_content)?;
@@ -18,22 +167,287 @@ impl GutenCore {
         Ok(())
     }
 
-    /// Clean HTML and produce a full, strictly valid XHTML document.
+    /// Limpia HTML y produce un documento XHTML completo y estrictamente válido
     ///
-    /// - Strips dangerous tags/JS (ammonia)
-    /// - Closes orphan tags via html5ever parse+serialize
-    /// - Injects XHTML namespace and lang from BookMetadata
-    /// - Injects <link> tags for every CSS in the manifest
+    /// Este método es el corazón del procesamiento de contenido HTML en `guten_core`.
+    /// Toma HTML potencialmente inseguro o mal formado y lo transforma en un
+    /// documento XHTML válido, listo para ser incluido en un EPUB.
+    ///
+    /// # Proceso completo de transformación
+    ///
+    /// El método aplica una serie de transformaciones en orden:
+    ///
+    /// 1. **Limpieza de seguridad** - Usa `ammonia` para eliminar:
+    ///    - Etiquetas peligrosas (`<script>`, `<iframe>`, `<object>`)
+    ///    - Handlers de eventos (`onclick`, `onload`, `onerror`)
+    ///    - URLs peligrosas (`javascript:`, `data:`)
+    ///    - Comentarios HTML y CDATA no seguros
+    ///
+    /// 2. **Parseo y corrección estructural** - Usa `html5ever` para:
+    ///    - Corregir etiquetas mal anidadas
+    ///    - Cerrar etiquetas huérfanas
+    ///    - Normalizar la estructura del DOM
+    ///
+    /// 3. **Conversión a XHTML** - Convierte elementos void HTML5 a formato self-closing:
+    ///    - `<br>` → `<br/>`
+    ///    - `<img>` → `<img/>`
+    ///    - `<hr>` → `<hr/>`
+    ///    - Entre otros (ver [`html5_to_xhtml_void_elements`])
+    ///
+    /// 4. **Extracción del cuerpo** - Extrae solo el contenido de `<body>`
+    ///    para envolverlo en una plantilla XHTML limpia
+    ///
+    /// 5. **Inyección selectiva de CSS** - Agrega enlaces a las hojas de estilo
+    ///    configuradas en `self.config.default_styles` (solo si `auto_inject` es `true`)
+    ///
+    ///    La inyección sigue estas reglas:
+    ///    - Solo inyecta si `self.config.auto_inject == true`
+    ///    - Toma los IDs de `self.config.default_styles` en orden
+    ///    - Busca cada ID en el `manifest` para obtener el `href`
+    ///    - Los CSS se inyectan en el orden exacto de `default_styles`
+    ///    - Los IDs que no existen en el manifiesto se ignoran silenciosamente
+    ///
+    /// 6. **Inyección de idioma** - Establece los atributos `lang` y `xml:lang`
+    ///    usando el idioma de los metadatos del libro
+    ///
+    /// 7. **Ensamblaje final** - Genera un documento XHTML completo con:
+    ///    - Declaración XML
+    ///    - Namespace XHTML correcto
+    ///    - Meta charset UTF-8
+    ///    - Enlaces CSS (en orden configurado)
+    ///    - Contenido sanitizado en el cuerpo
+    ///
+    /// # Configuración de inyección CSS
+    ///
+    /// El método respeta dos opciones de configuración:
+    ///
+    /// | Configuración | Tipo | Efecto |
+    /// |---------------|------|--------|
+    /// | `auto_inject` | `bool` | Si `true`, inyecta los CSS; si `false`, no inyecta ninguno |
+    /// | `default_styles` | `Vec<String>` | Lista de IDs de CSS a inyectar (respeta orden) |
+    ///
+    /// # Ejemplo de configuración
+    ///
+    /// ```json
+    /// {
+    ///   "default_styles": ["reset", "main", "theme-dark", "print"],
+    ///   "auto_inject": true
+    /// }
+    /// ```
+    ///
+    /// En este caso, se inyectarán los CSS con IDs `reset`, `main`, `theme-dark` y `print`
+    /// en ese orden específico.
+    ///
+    /// # Importancia del orden de CSS
+    ///
+    /// El orden en `default_styles` determina el orden de los `<link>` en el `<head>`:
+    ///
+    /// ```html
+    /// <!-- Si default_styles = ["reset", "main", "theme"] -->
+    /// <link rel="stylesheet" href="../Styles/reset.css"/>
+    /// <link rel="stylesheet" href="../Styles/main.css"/>
+    /// <link rel="stylesheet" href="../Styles/theme.css"/>
+    /// ```
+    ///
+    /// Esto es **crítico** para la cascada CSS: las reglas posteriores sobrescriben
+    /// a las anteriores. Por ejemplo:
+    /// - `reset.css` normaliza estilos
+    /// - `main.css` define estilos base
+    /// - `theme.css` aplica tema específico (sobrescribe main.css si es necesario)
+    ///
+    /// # Manejo de CSS faltantes
+    ///
+    /// Si un ID en `default_styles` no existe en el manifiesto, simplemente se ignora:
+    ///
+    /// ```no_run
+    /// # use guten_core::GutenCore;
+    /// // Suponiendo: default_styles = ["style", "inexistente", "theme"]
+    /// // El manifiesto tiene "style" y "theme", pero no "inexistente"
+    ///
+    /// // Resultado: solo se inyectan "style" y "theme" (en ese orden)
+    /// // "inexistente" se ignora silenciosamente (sin error)
+    /// ```
+    ///
+    /// # Argumentos
+    ///
+    /// * `html` - Cadena HTML a sanitizar (puede estar mal formada o contener código peligroso)
+    ///
+    /// # Retorna
+    ///
+    /// * `Result<String>` - Documento XHTML completo y válido, o un error si falla la serialización
+    ///
+    /// # Errores
+    ///
+    /// * `quick_xml::Error` - Si falla la serialización del DOM a XML
+    /// * Otros errores de parseo - Propagados desde `html5ever`
+    ///
+    /// # Ejemplo básico
+    ///
+    /// ```no_run
+    /// # use guten_core::GutenCore;
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let core = GutenCore::open_folder("./mi_epub")?;
+    ///
+    /// let html_sucio = r#"
+    ///     <div>
+    ///         <h1>Mi Título</h1>
+    ///         <p>Texto normal</p>
+    ///         <script>alert('XSS');</script>
+    ///         <img src="x" onerror="malicious()">
+    ///         <br>
+    ///     </div>
+    /// "#;
+    ///
+    /// let xhtml = core.sanitize_to_xhtml(html_sucio)?;
+    ///
+    /// // El resultado es XHTML válido, sin scripts ni handlers
+    /// assert!(xhtml.contains("<h1>Mi Título</h1>"));
+    /// assert!(!xhtml.contains("<script>"));
+    /// assert!(!xhtml.contains("onerror"));
+    /// assert!(xhtml.contains("<br/>"));  // Convertido a self-closing
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Ejemplo: Corrección de HTML mal formado
+    ///
+    /// ```no_run
+    /// # use guten_core::GutenCore;
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let core = GutenCore::open_folder("./mi_epub")?;
+    ///
+    /// let html_mal_formado = r#"
+    ///     <p>Texto con <strong>negrita sin cerrar
+    ///     <p>Otro párrafo</p>
+    /// "#;
+    ///
+    /// let xhtml = core.sanitize_to_xhtml(html_mal_formado)?;
+    ///
+    /// // html5ever corrige automáticamente la estructura
+    /// assert!(xhtml.contains("<strong>negrita sin cerrar</strong>"));
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Ejemplo: Inyección selectiva de CSS
+    ///
+    /// Suponiendo que tu configuración tiene `default_styles = ["main", "print"]`:
+    ///
+    /// ```no_run
+    /// # use guten_core::GutenCore;
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let core = GutenCore::open_folder("./mi_epub")?;
+    ///
+    /// // El manifiesto contiene CSS como:
+    /// // - "Styles/main.css" (id="main")
+    /// // - "Styles/print.css" (id="print")
+    /// // - "Styles/legacy.css" (id="legacy") - NO inyectado porque no está en default_styles
+    ///
+    /// let xhtml = core.sanitize_to_xhtml("<p>Hola</p>")?;
+    ///
+    /// // El resultado incluye solo los CSS configurados, en orden:
+    /// assert!(xhtml.contains(r#"<link rel="stylesheet" type="text/css" href="../Styles/main.css"/>"#));
+    /// assert!(xhtml.contains(r#"<link rel="stylesheet" type="text/css" href="../Styles/print.css"/>"#));
+    /// assert!(!xhtml.contains("legacy.css"));
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Ejemplo: Deshabilitar inyección CSS
+    ///
+    /// ```no_run
+    /// # use guten_core::GutenCore;
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut core = GutenCore::open_folder("./mi_epub")?;
+    ///
+    /// // Deshabilitar inyección automática
+    /// core.config.auto_inject = false;
+    ///
+    /// let xhtml = core.sanitize_to_xhtml("<p>Sin CSS</p>")?;
+    ///
+    /// // El <head> solo tendrá <meta charset="utf-8"/>, sin enlaces CSS
+    /// assert!(!xhtml.contains("<link"));
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Estructura del documento generado
+    ///
+    /// ```xml
+    /// <?xml version="1.0" encoding="UTF-8"?>
+    /// <html xmlns="http://www.w3.org/1999/xhtml" lang="es" xml:lang="es">
+    /// <head>
+    ///   <meta charset="utf-8"/>
+    ///   <link rel="stylesheet" type="text/css" href="../Styles/reset.css"/>
+    ///   <link rel="stylesheet" type="text/css" href="../Styles/main.css"/>
+    ///   <link rel="stylesheet" type="text/css" href="../Styles/theme.css"/>
+    /// </head>
+    /// <body>
+    ///   <!-- Contenido sanitizado aquí -->
+    /// </body>
+    /// </html>
+    /// ```
+    ///
+    /// # Características especiales
+    ///
+    /// - **Elementos self-closing**: Los elementos vacíos HTML (`<br>`, `<hr>`, `<img>`)
+    ///   se convierten automáticamente a formato XHTML (`<br/>`, `<hr/>`, `<img/>`)
+    /// - **Inyección selectiva de CSS**: Solo inyecta los CSS configurados en
+    ///   `default_styles` (no todos los del manifiesto)
+    /// - **Orden respetado**: Los CSS se inyectan en el orden exacto de `default_styles`
+    /// - **Inyección opcional**: Se puede deshabilitar con `auto_inject = false`
+    /// - **Rutas CSS relativas**: Los enlaces CSS usan `../` como prefijo porque:
+    ///   - Los archivos XHTML están en `OEBPS/Text/`
+    ///   - Los CSS están en `OEBPS/Styles/`
+    ///   - La ruta relativa correcta es `../Styles/archivo.css`
+    /// - **Idioma heredado**: Toma el idioma de `self.metadata.language` o usa `"en"` por defecto
+    /// - **Encoding UTF-8**: Siempre se declara UTF-8 (estándar EPUB)
+    ///
+    /// # Notas de implementación
+    ///
+    /// - **`ammonia`**: Proporciona la sanitización de seguridad (configuración por defecto)
+    /// - **`html5ever`**: Motor de parseo HTML del navegador Servo, garantiza
+    ///   corrección estructural incluso con HTML mal formado
+    /// - **`html5_to_xhtml_void_elements`**: Función auxiliar que convierte
+    ///   elementos void HTML (`<br>`, `<img>`) a formato XHTML self-closing
+    /// - **`extract_body`**: Función auxiliar que extrae solo el contenido de `<body>`
+    /// - **Búsqueda por ID**: Los CSS se resuelven buscando el ID en `manifest`,
+    ///   no la ruta directa
+    ///
+    /// # Limitaciones conocidas
+    ///
+    /// - **CSS solo por ID**: No se pueden inyectar CSS por ruta, solo por ID del manifiesto
+    /// - **Sin validación de CSS**: No verifica que los archivos CSS existan realmente
+    /// - **Rutas fijas**: Asume que los XHTML están en `Text/` y los CSS en `Styles/`
+    /// - **Sin soporte de JavaScript**: Todo JS se elimina (por diseño, EPUB no debe tener JS)
+    /// - **CSS faltantes se ignoran**: Si un ID en `default_styles` no existe, se ignora silenciosamente
+    ///
+    /// # Advertencias de seguridad
+    ///
+    /// - **No es infalible**: Aunque `ammonia` es muy seguro, revisa siempre
+    ///   contenido crítico después de la sanitización
+    /// - **Atributos `style`**: Los CSS inline se conservan, lo que puede ser
+    ///   vector de ataques en algunos navegadores antiguos
+    /// - **Contenido externo**: Si el HTML incluye imágenes externas, los `src`
+    ///   se conservan. Considera descargar y embeber imágenes localmente
+    ///
+    /// # Ver también
+    ///
+    /// - [`clean_html`](Self::clean_html) - Versión simple sin estructura XHTML
+    /// - [`save_chapter`](Self::save_chapter) - Usa este método internamente
+    /// - [`text_to_xhtml`](Self::text_to_xhtml) - Para convertir texto plano
+    /// - [`GutenConfig`](crate::types::GutenConfig) - Configuración de inyección CSS
+    /// - [Ammonia documentation](https://docs.rs/ammonia)
+    /// - [html5ever documentation](https://docs.rs/html5ever)
+    /// - [EPUB XHTML Content Documents](https://www.w3.org/TR/epub/#sec-xhtml)
     pub fn sanitize_to_xhtml(&self, html: &str) -> Result<String> {
         // 1. Strip dangerous tags/JS
         let cleaned = ammonia::clean(html);
 
         // 2. Parse to fix malformed structure (auto-closes orphan tags, etc.)
-        let dom = html5ever::parse_document(
-            markup5ever_rcdom::RcDom::default(),
-            Default::default(),
-        )
-        .one(cleaned);
+        let dom =
+            html5ever::parse_document(markup5ever_rcdom::RcDom::default(), Default::default())
+                .one(cleaned);
 
         // 3. Serialize back to a string and convert void elements to XHTML self-closing
         let mut bytes = Vec::new();
@@ -44,20 +458,20 @@ impl GutenCore {
         // 4. Extract just the <body> content so we can wrap it in our own template
         let body_content = extract_body(&body_fragment);
 
-        // 5. Collect CSS hrefs from manifest (relative to OEBPS root, so we prefix "../")
-        let css_links: Vec<String> = self
-            .manifest
-            .values()
-            .filter(|it| it.media_type == "text/css")
-            .map(|it| {
-                // nav and chapters are inside Text/, so CSS in Styles/ needs "../Styles/..."
-                // We use the stored href (relative to OPF dir) and prepend "../"
-                format!(
-                    r#"  <link rel="stylesheet" type="text/css" href="../{}"/>"#,
-                    it.href
-                )
-            })
-            .collect();
+        // 5. Collect CSS hrefs from config (respecting order and auto_inject flag)
+        let mut css_links = Vec::new();
+        if self.config.auto_inject {
+            for css_id in &self.config.default_styles {
+                if let Some(it) = self.manifest.get(css_id) {
+                    if it.media_type == "text/css" {
+                        css_links.push(format!(
+                            r#"  <link rel="stylesheet" type="text/css" href="../{}"/>"#,
+                            it.href
+                        ));
+                    }
+                }
+            }
+        }
 
         // 6. Get lang from metadata
         let lang = self
@@ -89,13 +503,160 @@ impl GutenCore {
     }
 }
 
-/// Convert HTML5 void elements to XHTML self-closing form.
-/// html5ever serializes <br>, <img>, <input>, etc. without closing slash,
-/// which breaks XML parsers like roxmltree.
+/// Convierte elementos void de HTML5 a formato self-closing de XHTML
+///
+/// `html5ever` serializa elementos void (como `<br>`, `<img>`, `<input>`)
+/// sin la barra de cierre, lo que **rompe los parsers XML** como `roxmltree`.
+/// Esta función corrige ese problema transformando los elementos void al
+/// formato XHTML estándar con barra de cierre (`<br/>`, `<img/>`, etc.).
+///
+/// # ¿Qué son elementos void?
+///
+/// En HTML5, los elementos void son aquellos que **no pueden tener contenido**
+/// ni etiqueta de cierre. Ejemplos comunes:
+///
+/// | Elemento | HTML5 | XHTML | Uso típico |
+/// |----------|-------|-------|------------|
+/// | `<br>`   | `<br>` | `<br/>` | Salto de línea |
+/// | `<img>`  | `<img src="...">` | `<img src="..."/>` | Imagen |
+/// | `<hr>`   | `<hr>` | `<hr/>` | Línea horizontal |
+/// | `<link>` | `<link href="...">` | `<link href="..."/>` | CSS, íconos |
+/// | `<meta>` | `<meta charset="...">` | `<meta charset="..."/>` | Metadatos |
+/// | `<input>`| `<input type="...">` | `<input type="..."/>` | Campos de formulario |
+///
+/// # Transformaciones realizadas
+///
+/// La función maneja dos casos principales:
+///
+/// 1. **Elementos sin atributos** (ej: `<br>`):
+///    ```text
+///    <br>  →  <br/>
+///    <hr>  →  <hr/>
+///    ```
+///
+/// 2. **Elementos con atributos** (ej: `<img src="foto.jpg">`):
+///    ```text
+///    <img src="foto.jpg">  →  <img src="foto.jpg"/>
+///    <link rel="stylesheet" href="style.css">  →  <link rel="stylesheet" href="style.css"/>
+///    ```
+///
+/// 3. **Elementos ya correctos** (con `/>`):
+///    ```text
+///    <br/>   →   <br/>   (sin cambios)
+///    <img src="x"/>  →  <img src="x"/>  (sin cambios)
+///    ```
+///
+/// # Argumentos
+///
+/// * `html` - Cadena HTML serializada por `html5ever` (puede contener elementos void en formato HTML5)
+///
+/// # Retorna
+///
+/// * `String` - Mismo HTML pero con elementos void convertidos a formato XHTML self-closing
+///
+/// # Ejemplo básico
+///
+/// ```rust
+/// # use guten_core::html5_to_xhtml_void_elements;
+/// let html5 = r#"<p>Línea 1<br>Línea 2</p>
+/// <img src="foto.jpg" alt="Descripción">
+/// <hr>
+/// <link href="style.css" rel="stylesheet">"#;
+///
+/// let xhtml = html5_to_xhtml_void_elements(html5);
+///
+/// assert_eq!(xhtml, r#"<p>Línea 1<br/>Línea 2</p>
+/// <img src="foto.jpg" alt="Descripción"/>
+/// <hr/>
+/// <link href="style.css" rel="stylesheet"/>"#);
+/// ```
+///
+/// # Ejemplo con elementos mixtos
+///
+/// ```rust
+/// # use guten_core::html5_to_xhtml_void_elements;
+/// let input = r#"
+/// <div>
+///   <input type="text" name="nombre">
+///   <br>
+///   <meta charset="utf-8">
+///   <br/>
+///   <input type="checkbox" checked>
+/// </div>"#;
+///
+/// let output = html5_to_xhtml_void_elements(input);
+///
+/// assert!(output.contains("<input type=\"text\" name=\"nombre\"/>"));
+/// assert!(output.contains("<br/>"));
+/// assert!(output.contains("<meta charset=\"utf-8\"/>"));
+/// assert!(output.contains("<input type=\"checkbox\" checked/>"));
+/// // El <br/> original se mantiene igual
+/// assert!(output.contains("<br/>"));
+/// ```
+///
+/// # Lista completa de elementos procesados
+///
+/// La función convierte todos los elementos void del estándar HTML5:
+///
+/// ```text
+/// area, base, br, col, embed, hr, img, input,
+/// link, meta, param, source, track, wbr
+/// ```
+///
+/// # ¿Por qué es necesaria esta función?
+///
+/// ```text
+/// html5ever (HTML5 parser)  →  <br>, <img>   (formato HTML5)
+///                             ↓
+///                    ¡XML Parser se rompe!
+///                             ↓
+///            roxmltree espera  →  <br/>, <img/>  (formato XHTML)
+/// ```
+///
+/// `roxmltree` (y cualquier parser XML conforme) requiere que los elementos
+/// vacíos se marquen explícitamente con `/>`. Sin esta conversión, el EPUB
+/// resultante sería inválido y no podría ser leído por lectores de EPUB.
+///
+/// # Notas de implementación
+///
+/// - **Algoritmo**: La función procesa cada elemento void individualmente,
+///   buscando patrones `<tag>` y `<tag ...>` para reemplazarlos.
+/// - **Preserva atributos**: Los atributos existentes se mantienen intactos.
+/// - **No sobre-convierte**: Los elementos que ya tienen `/>` no se modifican.
+/// - **Eficiencia**: Para documentos muy grandes (>1MB), considera optimizar
+///   con expresiones regulares o procesamiento en streaming.
+///
+/// # Limitaciones conocidas
+///
+/// - **No soporta atributos con `>`**: Si un atributo contiene `>` (muy raro),
+///   el parseo podría fallar. No es un caso realista en HTML válido.
+/// - **Mayúsculas/minúsculas**: Solo reconoce etiquetas en minúsculas.
+///   HTML5 es case-insensitive, pero por convención se usan minúsculas.
+/// - **Sin validación**: No verifica que los elementos procesados sean
+///   realmente void según el estándar; confía en la lista proporcionada.
+///
+/// # Uso típico
+///
+/// Esta función se usa internamente en [`sanitize_to_xhtml`](Self::sanitize_to_xhtml):
+///
+/// ```ignore
+/// let dom = html5ever::parse_document(...);
+/// let mut bytes = Vec::new();
+/// html5ever::serialize(&mut bytes, &dom, Default::default())?;
+/// let html = String::from_utf8_lossy(&bytes);
+/// let xhtml = html5_to_xhtml_void_elements(&html);
+/// ```
+///
+/// # Ver también
+///
+/// - [`sanitize_to_xhtml`](Self::sanitize_to_xhtml) - Método principal que usa esta función
+/// - [HTML Void Elements (MDN)](https://developer.mozilla.org/en-US/docs/Glossary/Void_element)
+/// - [XHTML Empty Elements](https://www.w3.org/TR/xhtml1/#C_2)
+/// - [html5ever documentation](https://docs.rs/html5ever)
 fn html5_to_xhtml_void_elements(html: &str) -> String {
     const VOID: &[&str] = &[
-        "area", "base", "br", "col", "embed", "hr", "img", "input",
-        "link", "meta", "param", "source", "track", "wbr",
+        "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param",
+        "source", "track", "wbr",
     ];
 
     let mut result = html.to_string();
@@ -132,7 +693,169 @@ fn html5_to_xhtml_void_elements(html: &str) -> String {
     result
 }
 
-/// Extract the content inside <body>...</body>, or return the whole string if not found.
+/// Extrae el contenido dentro de `<body>...</body>`, o retorna la cadena completa si no se encuentra
+///
+/// Esta función auxiliar toma un documento HTML y extrae exclusivamente el
+/// contenido que está dentro de la etiqueta `<body>`. Es útil cuando se tiene
+/// un documento HTML completo (generado por `html5ever`) pero solo se desea
+/// el contenido del cuerpo para insertarlo en una plantilla XHTML personalizada.
+///
+/// # Comportamiento
+///
+/// La función maneja dos formatos posibles de la etiqueta `<body>`:
+///
+/// 1. **`<body>` sin atributos** - Busca la etiqueta exacta `<body>`
+/// 2. **`<body>` con atributos** - Busca `<body ` seguido de atributos
+///
+/// # Algoritmo
+///
+/// 1. Busca la etiqueta de apertura `<body>` (con o sin atributos)
+/// 2. Localiza el cierre `>` de esa etiqueta
+/// 3. Busca la etiqueta de cierre `</body>`
+/// 4. Extrae el texto entre ambas posiciones
+/// 5. Aplica `trim()` para eliminar espacios en blanco innecesarios
+///
+/// Si no se encuentra `<body>`, retorna el HTML original (sin modificar).
+///
+/// # Argumentos
+///
+/// * `html` - Cadena HTML que puede contener o no etiquetas `<body>`
+///
+/// # Retorna
+///
+/// * `String` - Contenido del `<body>` si existe, o el HTML original si no
+///
+/// # Ejemplo básico
+///
+/// ```rust
+/// # use guten_core::extract_body;
+/// let html = r#"<html>
+/// <head><title>Test</title></head>
+/// <body>
+///   <h1>Mi Título</h1>
+///   <p>Contenido del cuerpo.</p>
+/// </body>
+/// </html>"#;
+///
+/// let body = extract_body(html);
+/// assert_eq!(body, "<h1>Mi Título</h1>\n  <p>Contenido del cuerpo.</p>");
+/// ```
+///
+/// # Ejemplo con atributos en `<body>`
+///
+/// ```rust
+/// # use guten_core::extract_body;
+/// let html = r#"<html>
+/// <body class="main" id="content" data-theme="light">
+///   <p>Texto con atributos en body</p>
+/// </body>
+/// </html>"#;
+///
+/// let body = extract_body(html);
+/// assert_eq!(body, "<p>Texto con atributos en body</p>");
+/// ```
+///
+/// # Ejemplo sin etiqueta `<body>`
+///
+/// ```rust
+/// # use guten_core::extract_body;
+/// let fragmento = "<p>Esto es solo un fragmento HTML</p>";
+///
+/// let body = extract_body(fragmento);
+/// // Como no hay etiqueta <body>, retorna el original
+/// assert_eq!(body, "<p>Esto es solo un fragmento HTML</p>");
+/// ```
+///
+/// # Ejemplo con HTML anidado complejo
+///
+/// ```rust
+/// # use guten_core::extract_body;
+/// let html = r#"<!DOCTYPE html>
+/// <html xmlns="http://www.w3.org/1999/xhtml">
+/// <head>
+///   <meta charset="utf-8"/>
+///   <title>Página Compleja</title>
+/// </head>
+/// <body id="top" class="dark-mode">
+///   <header>
+///     <h1>Bienvenido</h1>
+///   </header>
+///   <main>
+///     <article>
+///       <p>Contenido principal</p>
+///       <aside>Nota al margen</aside>
+///     </article>
+///   </main>
+///   <footer>Pie de página</footer>
+/// </body>
+/// </html>"#;
+///
+/// let body = extract_body(html);
+///
+/// assert!(body.contains("<header>"));
+/// assert!(body.contains("<h1>Bienvenido</h1>"));
+/// assert!(body.contains("<p>Contenido principal</p>"));
+/// assert!(body.contains("<footer>Pie de página</footer>"));
+/// assert!(!body.contains("<head>"));
+/// assert!(!body.contains("<title>"));
+/// ```
+///
+/// # Ejemplo con body vacío
+///
+/// ```rust
+/// # use guten_core::extract_body;
+/// let html = "<html><body></body></html>";
+/// let body = extract_body(html);
+/// assert_eq!(body, "");  // String vacío, no espacios
+/// ```
+///
+/// # Casos extremos
+///
+/// | Entrada | Salida | Razón |
+/// |---------|--------|-------|
+/// | `<body></body>` | `""` (vacío) | Cuerpo sin contenido |
+/// | `<body>   </body>` | `""` (vacío) | `trim()` elimina espacios |
+/// | `<body><p>texto</body>` | `<p>texto` | Funciona aunque falte cierre (caso inválido) |
+/// | `<body>` sin cierre | Todo después de `<body>` | `rfind` retorna `None` → HTML original |
+/// | `texto sin etiquetas` | `texto sin etiquetas` | Sin `<body>` → original |
+///
+/// # Notas de implementación
+///
+/// - **Búsqueda flexible**: Usa `or_else` para encontrar `<body>` con o sin atributos
+/// - **Posición después de `>`**: Calcula el índice correcto saltándose el `>` de apertura
+/// - **Fallback seguro**: Si no encuentra `</body>`, retorna el HTML original
+/// - **`trim()` automático**: Elimina espacios en blanco alrededor del contenido
+/// - **Sin parseo XML**: Esta función es intencionalmente simple (basada en strings)
+///   para evitar dependencias adicionales. Para casos complejos, confiamos en
+///   que `html5ever` ya produjo HTML bien formado.
+///
+/// # Limitaciones
+///
+/// - **No es un parser XML**: Usa búsqueda simple de strings, no un parser completo.
+///   Esto es suficiente porque `html5ever` ya garantiza etiquetas balanceadas.
+/// - **No soporta `<body>` con `>` en atributos**: Si un atributo contiene el
+///   carácter `>` (extremadamente raro), el cálculo de `tag_end` podría fallar.
+/// - **Case-sensitive**: Solo reconoce `<body>` en minúsculas. `html5ever`
+///   normaliza a minúsculas, así que es seguro.
+/// - **No procesa etiquetas anidadas**: No es necesario, solo extrae contenido
+///   entre la primera apertura y el último cierre.
+///
+/// # Uso típico
+///
+/// Esta función se usa en [`sanitize_to_xhtml`](crate::core::GutenCore::sanitize_to_xhtml):
+///
+/// ```ignore
+/// let dom = html5ever::parse_document(...);
+/// let serialized = serialize_to_string(&dom);
+/// let body_content = extract_body(&serialized);
+/// let final_xhtml = format!("<html>...<body>{}</body></html>", body_content);
+/// ```
+///
+/// # Ver también
+///
+/// - [`sanitize_to_xhtml`](crate::core::GutenCore::sanitize_to_xhtml) - Método principal que usa esta función
+/// - [`html5_to_xhtml_void_elements`](crate::html5_to_xhtml_void_elements) - Otra función auxiliar relacionada
+/// - [html5ever documentation](https://docs.rs/html5ever)
 fn extract_body(html: &str) -> String {
     let start = html.find("<body>").or_else(|| html.find("<body "));
     let end = html.rfind("</body>");

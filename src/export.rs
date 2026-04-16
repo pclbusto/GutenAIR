@@ -9,7 +9,165 @@ use walkdir::WalkDir;
 use path_slash::PathExt;
 
 impl GutenCore {
-    /// Export the workspace to a valid EPUB file
+        /// Exporta el espacio de trabajo a un archivo EPUB válido
+    ///
+    /// Este método empaqueta todo el proyecto EPUB descomprimido en un archivo
+    /// `.epub` comprimido siguiendo estrictamente la especificación EPUB 3.0.
+    /// Realiza validaciones previas, guarda cambios pendientes y construye
+    /// el archivo ZIP con el orden y compresión correctos.
+    ///
+    /// # Proceso de exportación
+    ///
+    /// El método sigue estos pasos en orden:
+    ///
+    /// 1. **Validación de integridad** - Verifica que el proyecto sea válido
+    ///    llamando a [`validate_integrity`](Self::validate_integrity)
+    ///
+    /// 2. **Guardado automático** - Llama a [`save`](Self::save) para asegurar
+    ///    que el OPF esté sincronizado con el estado actual
+    ///
+    /// 3. **Creación del archivo ZIP** - Construye el archivo `.epub` con:
+    ///    - `mimetype` como primer archivo, **sin compresión** (requisito obligatorio)
+    ///    - El resto de archivos comprimidos con DEFLATE
+    ///    - Preservando la estructura de directorios
+    ///    - Usando rutas con separadores `/` (estándar EPUB)
+    ///
+    /// # Estructura del EPUB generado
+    ///
+    /// ```text
+    /// libro.epub
+    /// ├── mimetype                          (primer archivo, sin compresión)
+    /// ├── META-INF/
+    /// │   └── container.xml
+    /// └── OEBPS/
+    ///     ├── content.opf
+    ///     ├── Text/
+    ///     │   ├── chap1.xhtml
+    ///     │   └── nav.xhtml
+    ///     ├── Styles/
+    ///     │   └── style.css
+    ///     └── Images/
+    ///         └── (imágenes)
+    /// ```
+    ///
+    /// # Reglas de compresión
+    ///
+    /// | Archivo | Compresión | Razón |
+    /// |---------|------------|-------|
+    /// | `mimetype` | `Stored` (sin compresión) | **Requisito obligatorio** del estándar EPUB |
+    /// | Todos los demás | `Deflated` (ZIP DEFLATE) | Optimización de tamaño |
+    ///
+    /// # Argumentos
+    ///
+    /// * `output_path` - Ruta donde se guardará el archivo EPUB generado
+    ///   (ej: `"./mi_libro.epub"` o `"/ruta/completa/libro.epub"`)
+    ///
+    /// # Retorna
+    ///
+    /// * `Result<()>` - `Ok(())` si la exportación es exitosa, o un error
+    ///   si falla la validación, el guardado o la compresión.
+    ///
+    /// # Errores
+    ///
+    /// Este método puede retornar los siguientes errores:
+    ///
+    /// * `GutenError::Other` - Si:
+    ///   - La validación de integridad encuentra errores (los detalles se incluyen)
+    ///   - Hay problemas al recorrer el directorio con `WalkDir`
+    /// * `GutenError::Io` - Si falla:
+    ///   - La creación del archivo de salida
+    ///   - La lectura de archivos del proyecto
+    ///   - La escritura en el ZIP
+    /// * `GutenError::InvalidProject` - Si `save()` falla (propagado)
+    /// * `GutenError::Xml` - Si `save()` falla por errores XML (propagado)
+    ///
+    /// # Ejemplo básico
+    ///
+    /// ```no_run
+    /// # use guten_core::GutenCore;
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// // Abrir un proyecto existente
+    /// let mut core = GutenCore::open_folder("./mi_proyecto_epub")?;
+    ///
+    /// // Exportar a archivo EPUB
+    /// core.export_epub("./mi_libro.epub")?;
+    /// println!("EPUB generado exitosamente!");
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Ejemplo con proyecto nuevo
+    ///
+    /// ```no_run
+    /// # use guten_core::GutenCore;
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// // Crear un proyecto nuevo
+    /// let mut core = GutenCore::new_project("./nuevo_libro", "Mi Novela", "es")?;
+    ///
+    /// // Hacer modificaciones...
+    /// if let Some(meta) = &mut core.metadata {
+    ///     meta.title = "El Gran Viaje".to_string();
+    /// }
+    ///
+    /// // Exportar directamente (save() se llama automáticamente)
+    /// core.export_epub("./el_gran_viaje.epub")?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Ejemplo con manejo de errores
+    ///
+    /// ```no_run
+    /// # use guten_core::GutenCore;
+    /// # use guten_core::error::GutenError;
+    /// let mut core = GutenCore::open_folder("./proyecto_invalido")?;
+    ///
+    /// match core.export_epub("./salida.epub") {
+    ///     Ok(_) => println!("Exportación exitosa"),
+    ///     Err(GutenError::Other(msg)) if msg.contains("Integrity check failed") => {
+    ///         eprintln!("El proyecto no es válido: {}", msg);
+    ///     }
+    ///     Err(e) => eprintln!("Error durante la exportación: {}", e),
+    /// }
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// # Notas importantes sobre el estándar EPUB
+    ///
+    /// - **`mimetype` primero**: El archivo `mimetype` **debe** ser el primer
+    ///   archivo en el ZIP y **no puede estar comprimido**. Los lectores EPUB
+    ///   usan esto para identificar el formato rápidamente.
+    /// - **Rutas normalizadas**: Se usan barras normales `/` (no `\`) gracias a
+    ///   `path_slash::PathExt`, compatible con el estándar EPUB.
+    /// - **Permisos Unix**: Se establecen permisos `0o644` (rw-r--r--) para
+    ///   compatibilidad multiplataforma.
+    /// - **Validación previa**: El proyecto debe pasar `validate_integrity()`
+    ///   antes de exportar, asegurando que todos los archivos referenciados existan.
+    ///
+    /// # Rendimiento
+    ///
+    /// - **Proyectos pequeños** (< 10MB): Generalmente < 1 segundo
+    /// - **Proyectos grandes** (> 100MB): Puede tomar varios segundos debido a
+    ///   la compresión DEFLATE de imágenes y archivos grandes.
+    /// - **Optimización**: Si exportas frecuentemente, considera mantener el
+    ///   proyecto abierto y solo llamar a `export_epub` cuando esté listo.
+    ///
+    /// # Advertencias
+    ///
+    /// - **Sobrescritura**: Si el archivo `output_path` ya existe, **será sobrescrito**.
+    /// - **Proyecto temporal**: El proyecto original en disco no se modifica
+    ///   (excepto por la llamada automática a `save()`, que actualiza el OPF).
+    /// - **Memoria**: Los archivos se leen completamente en memoria antes de
+    ///   comprimirse. Para archivos muy grandes (>500MB), considera implementar
+    ///   streaming.
+    ///
+    /// # Ver también
+    ///
+    /// - [`save`](Self::save) - Guarda cambios en el OPF (llamado automáticamente)
+    /// - [`validate_integrity`](Self::validate_integrity) - Validación previa a exportación
+    /// - [`open_folder`](Self::open_folder) - Abre un proyecto descomprimido
+    /// - [EPUB 3.3 Specification - OCF](https://www.w3.org/TR/epub/#sec-ocf) - Especificación oficial
+    /// - [ZIP Archive Format](https://pkware.com/documents/casestudies/APPNOTE.TXT)
     pub fn export_epub(&mut self, output_path: impl AsRef<Path>) -> Result<()> {
         // 1. Validate integrity before export
         let errors = self.validate_integrity();

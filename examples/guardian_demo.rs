@@ -26,7 +26,7 @@ fn main() -> anyhow::Result<()> {
     
     // 4. Content Guardian (Saving dirty HTML)
     println!("\n--- 4. Content Guardian (XHTML Enforcement) ---");
-    let dirty_html = r#"<h1>Chapter 1</h1><p>This is a test with a <br> unclosed tag and an <b>unclosed bold tag. <img src="../Images/logo.png">"#;
+    let dirty_html = r#"<h1>Chapter 1</h1><h2>Section 1.1</h2><p>This is a test with a <br> unclosed tag and an <b>unclosed bold tag. <img src="../Images/logo.png">"#;
     println!("  Saving dirty HTML...");
     core.save_chapter("chap1", dirty_html)?;
     
@@ -53,8 +53,34 @@ fn main() -> anyhow::Result<()> {
     assert!(nav_content.contains("GutenAIR: The Guardian"));
     println!("  ✔ NAV synchronized automatically");
 
-    // 6. Deep Validation (Orphans)
-    println!("\n--- 6. Deep Validation ---");
+    // 6. Project Portability (Config)
+    println!("\n--- 6. Project Portability (gutenAIR.config) ---");
+    println!("  Checking for config file...");
+    let config_path = project_path.join("META-INF/gutenAIR.config");
+    assert!(config_path.exists());
+    let config_json = std::fs::read_to_string(&config_path)?;
+    println!("  Config Content:\n{}", config_json);
+
+    println!("\n  Modifying config and editor state...");
+    core.config.editor_state.insert("last_sync".to_string(), "2026-04-16".to_string());
+    core.config.editor_state.insert("ai_prompt".to_string(), "Write a mystery novel".to_string());
+    
+    // Test custom CSS order using high-level methods
+    println!("  Adding extra CSS and changing injection order...");
+    core.add_style("extra_css", ".extra { color: red; }")?;
+    core.set_style_as_default("extra_css")?;
+    core.save()?;
+
+    let chap1_after = core.sanitize_to_xhtml(&std::fs::read_to_string(core.get_resource_path("chap1")?)?)?;
+    println!("  Sanitized Chap1 with custom CSS order:\n---");
+    println!("{}", chap1_after);
+    println!("---");
+    assert!(chap1_after.contains("style.css\"/>\n  <link rel=\"stylesheet\" type=\"text/css\" href=\"../Styles/extra_css.css\"/>"));
+    assert!(std::fs::read_to_string(&config_path)?.contains("Write a mystery novel"));
+    println!("  ✔ Configuration and CSS order verified");
+
+    // 7. Deep Validation (Orphans)
+    println!("\n--- 7. Deep Validation ---");
     std::fs::write(project_path.join("OEBPS/orphan.txt"), "I am not in the manifest")?;
     let (errors, orphans) = core.validate_integrity_deep();
     println!("  Integrity errors: {}", errors.len());

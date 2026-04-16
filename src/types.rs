@@ -45,3 +45,20 @@ pub enum ResourceKind {
     Navigation,
     Other,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GutenConfig {
+    pub default_styles: Vec<String>,
+    pub auto_inject: bool,
+    pub editor_state: std::collections::HashMap<String, String>,
+}
+
+impl Default for GutenConfig {
+    fn default() -> Self {
+        Self {
+            default_styles: Vec::new(),
+            auto_inject: true,
+            editor_state: std::collections::HashMap::new(),
+        }
+    }
+}
