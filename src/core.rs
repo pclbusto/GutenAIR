@@ -1550,6 +1550,8 @@ impl GutenCore {
     ///
     /// Este método modifica las preferencias de `gutenAIR.config` para incluir
     /// el ID del estilo en la lista de inyección automática (`default_styles`).
+    /// Esta lista se aplica a todos los capítulos que **no** tengan una excepción
+    /// definida.
     ///
     /// # Comportamiento
     /// - Verifica que el ID exista en el manifiesto.
@@ -1568,7 +1570,7 @@ impl GutenCore {
     /// # use guten_core::GutenCore;
     /// let mut core = GutenCore::open_folder("./mi_epub")?;
     ///
-    /// // Registrar y activar un estilo
+    /// // Registrar y activar un estilo global
     /// core.add_style("moderno", "body { font-size: 1.2em; }")?;
     /// core.set_style_as_default("moderno")?;
     ///
@@ -1579,7 +1581,8 @@ impl GutenCore {
     ///
     /// # Ver también
     /// - [`add_style`](Self::add_style) - Para crear el archivo CSS primero
-    /// - [`save_config_file`](Self::save_config_file) - Para persistir solo la configuración
+    /// - [`remove_style_from_chapter`](Self::remove_style_from_chapter) - Para crear una excepción
+    /// - [`get_chapter_styles`](Self::get_chapter_styles) - Para ver qué estilos se aplican
     pub fn set_style_as_default(&mut self, id: &str) -> Result<()> {
         // 1. Validar que el ID existe
         if !self.manifest.contains_key(id) {
@@ -1593,6 +1596,93 @@ impl GutenCore {
         if !self.config.default_styles.contains(&id.to_string()) {
             self.config.default_styles.push(id.to_string());
         }
+
+        Ok(())
+    }
+
+    /// Obtiene la lista de estilos (IDs) que se aplican a un capítulo específico
+    ///
+    /// Este método resuelve la jerarquía de estilos de GutenAIR:
+    /// 1. Consulta el mapa de `exceptions` en la configuración.
+    /// 2. Si el capítulo tiene una lista personalizada, la retorna.
+    /// 3. Si no hay excepción, retorna la lista global de `default_styles`.
+    ///
+    /// # Argumentos
+    /// * `id_chapter` - ID del capítulo (XHTML) en el manifiesto.
+    ///
+    /// # Retorna
+    /// * `Vec<String>` - Lista ordenada de IDs de recursos CSS.
+    ///
+    /// # Ejemplo
+    /// ```no_run
+    /// # use guten_core::GutenCore;
+    /// let core = GutenCore::open_folder("./mi_epub")?;
+    /// let estilos = core.get_chapter_styles("chap1");
+    /// println!("Estilos aplicados a chap1: {:?}", estilos);
+    /// ```
+    pub fn get_chapter_styles(&self, id_chapter: &str) -> Vec<String> {
+        self.config
+            .exceptions
+            .get(id_chapter)
+            .cloned()
+            .unwrap_or_else(|| self.config.default_styles.clone())
+    }
+
+    /// Elimina el vínculo de una hoja de estilo de un capítulo específico
+    ///
+    /// Este método crea o actualiza automáticamente una entrada en el mapa de
+    /// excepciones para el capítulo indicado. A partir de este momento, el capítulo
+    /// dejará de heredar la lista global de estilos (`default_styles`) y usará
+    /// su propia lista personalizada.
+    ///
+    /// # Proceso
+    /// 1. Obtiene la lista actual de estilos para el capítulo (vía [`get_chapter_styles`]).
+    /// 2. Elimina todas las ocurrencias del `id_style` solicitado.
+    /// 3. Registra el resultado en `config.exceptions` bajo la clave `id_chapter`.
+    ///
+    /// # Argumentos
+    /// * `id_chapter` - ID del capítulo al que se le quitará el estilo.
+    /// * `id_style` - ID del estilo a eliminar.
+    ///
+    /// # Errores
+    /// * `GutenError::Manifest` - Si el capítulo no existe en el manifiesto.
+    ///
+    /// # Notas
+    /// - Si el capítulo ya era una excepción, simplemente se elimina el estilo de su lista.
+    /// - Si el capítulo no era una excepción, se crea una copia de `default_styles`
+    ///   sin el estilo indicado.
+    /// - Este cambio solo afecta a la memoria; llama a [`save`] para persistir.
+    ///
+    /// # Ejemplo
+    /// ```no_run
+    /// # use guten_core::GutenCore;
+    /// let mut core = GutenCore::open_folder("./mi_epub")?;
+    ///
+    /// // El estilo 'oscuro' es global, pero no lo queremos en la portada
+    /// core.remove_style_from_chapter("cover", "oscuro")?;
+    /// core.save()?;
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn remove_style_from_chapter(&mut self, id_chapter: &str, id_style: &str) -> Result<()> {
+        // Validar que el capítulo existe
+        if !self.manifest.contains_key(id_chapter) {
+            return Err(GutenError::Manifest(format!(
+                "Chapter ID '{}' not found in manifest",
+                id_chapter
+            )));
+        }
+
+        // Obtener la "capa" actual de estilos y filtrar
+        let current_styles = self.get_chapter_styles(id_chapter);
+        let new_styles: Vec<String> = current_styles
+            .into_iter()
+            .filter(|s| s != id_style)
+            .collect();
+
+        // Registrar como excepción
+        self.config
+            .exceptions
+            .insert(id_chapter.to_string(), new_styles);
 
         Ok(())
     }

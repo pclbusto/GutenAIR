@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<package version="3.0" unique-identifier="bookid" xmlns="http://www.idpf.org/2007/opf" xml:lang="es">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/">
+    <dc:identifier id="bookid">urn:uuid:d2fb33d2-9898-4a2d-8b55-6cf42f25f79a</dc:identifier>
+    <dc:title>Test de Estilos</dc:title>
+    <dc:language>es</dc:language>
+    <meta property="dcterms:modified">2026-04-16T19:59:51Z</meta>
+  </metadata>
+  <manifest>
+    <item id="cap1" href="Text/cap1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="chap1" href="Text/chap1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="global" href="Styles/global.css" media-type="text/css"/>
+    <item id="intro" href="Text/intro.xhtml" media-type="application/xhtml+xml"/>
+    <item id="nav" href="Text/nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    <item id="special" href="Styles/special.css" media-type="text/css"/>
+    <item id="style" href="Styles/style.css" media-type="text/css"/>
+  </manifest>
+  <spine>
+    <itemref idref="chap1"/>
+    <itemref idref="intro"/>
+    <itemref idref="cap1"/>
+  </spine>
+</package>

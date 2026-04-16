@@ -160,7 +160,7 @@ impl GutenCore {
             )));
         }
 
-        let clean_xhtml = self.sanitize_to_xhtml(raw_content)?;
+        let clean_xhtml = self.sanitize_to_xhtml(id, raw_content)?;
         let full_path = self.get_resource_path(id)?;
 
         fs::write(full_path, clean_xhtml)?;
@@ -198,13 +198,13 @@ impl GutenCore {
     ///    para envolverlo en una plantilla XHTML limpia
     ///
     /// 5. **Inyección selectiva de CSS** - Agrega enlaces a las hojas de estilo
-    ///    configuradas en `self.config.default_styles` (solo si `auto_inject` es `true`)
+    ///    aplicables a este capítulo (según `default_styles` o `exceptions`)
     ///
     ///    La inyección sigue estas reglas:
     ///    - Solo inyecta si `self.config.auto_inject == true`
-    ///    - Toma los IDs de `self.config.default_styles` en orden
+    ///    - Consulta la lista de estilos vía [`get_chapter_styles`](Self::get_chapter_styles)
     ///    - Busca cada ID en el `manifest` para obtener el `href`
-    ///    - Los CSS se inyectan en el orden exacto de `default_styles`
+    ///    - Los CSS se inyectan en el orden exacto definido
     ///    - Los IDs que no existen en el manifiesto se ignoran silenciosamente
     ///
     /// 6. **Inyección de idioma** - Establece los atributos `lang` y `xml:lang`
@@ -270,6 +270,7 @@ impl GutenCore {
     ///
     /// # Argumentos
     ///
+    /// * `id` - ID del capítulo (para consultar excepciones de estilo)
     /// * `html` - Cadena HTML a sanitizar (puede estar mal formada o contener código peligroso)
     ///
     /// # Retorna
@@ -298,7 +299,7 @@ impl GutenCore {
     ///     </div>
     /// "#;
     ///
-    /// let xhtml = core.sanitize_to_xhtml(html_sucio)?;
+    /// let xhtml = core.sanitize_to_xhtml("chap1", html_sucio)?;
     ///
     /// // El resultado es XHTML válido, sin scripts ni handlers
     /// assert!(xhtml.contains("<h1>Mi Título</h1>"));
@@ -321,7 +322,7 @@ impl GutenCore {
     ///     <p>Otro párrafo</p>
     /// "#;
     ///
-    /// let xhtml = core.sanitize_to_xhtml(html_mal_formado)?;
+    /// let xhtml = core.sanitize_to_xhtml("chap1", html_mal_formado)?;
     ///
     /// // html5ever corrige automáticamente la estructura
     /// assert!(xhtml.contains("<strong>negrita sin cerrar</strong>"));
@@ -331,7 +332,8 @@ impl GutenCore {
     ///
     /// # Ejemplo: Inyección selectiva de CSS
     ///
-    /// Suponiendo que tu configuración tiene `default_styles = ["main", "print"]`:
+    /// Suponiendo que tu configuración tiene `default_styles = ["main", "print"]`
+    /// y no hay excepciones para "capitulo1":
     ///
     /// ```no_run
     /// # use guten_core::GutenCore;
@@ -341,9 +343,9 @@ impl GutenCore {
     /// // El manifiesto contiene CSS como:
     /// // - "Styles/main.css" (id="main")
     /// // - "Styles/print.css" (id="print")
-    /// // - "Styles/legacy.css" (id="legacy") - NO inyectado porque no está en default_styles
+    /// // - "Styles/legacy.css" (id="legacy") - NO inyectado porque no está en la lista aplicada
     ///
-    /// let xhtml = core.sanitize_to_xhtml("<p>Hola</p>")?;
+    /// let xhtml = core.sanitize_to_xhtml("capitulo1", "<p>Hola</p>")?;
     ///
     /// // El resultado incluye solo los CSS configurados, en orden:
     /// assert!(xhtml.contains(r#"<link rel="stylesheet" type="text/css" href="../Styles/main.css"/>"#));
@@ -363,7 +365,7 @@ impl GutenCore {
     /// // Deshabilitar inyección automática
     /// core.config.auto_inject = false;
     ///
-    /// let xhtml = core.sanitize_to_xhtml("<p>Sin CSS</p>")?;
+    /// let xhtml = core.sanitize_to_xhtml("chap1", "<p>Sin CSS</p>")?;
     ///
     /// // El <head> solo tendrá <meta charset="utf-8"/>, sin enlaces CSS
     /// assert!(!xhtml.contains("<link"));
@@ -394,8 +396,9 @@ impl GutenCore {
     ///   se convierten automáticamente a formato XHTML (`<br/>`, `<hr/>`, `<img/>`)
     /// - **Inyección selectiva de CSS**: Solo inyecta los CSS configurados en
     ///   `default_styles` (no todos los del manifiesto)
-    /// - **Orden respetado**: Los CSS se inyectan en el orden exacto de `default_styles`
+    /// - **Orden respetado**: Los CSS se inyectan en el orden exacto definido globalmente o por excepción
     /// - **Inyección opcional**: Se puede deshabilitar con `auto_inject = false`
+    /// - **Estilos por capítulo**: Usa [`get_chapter_styles`](Self::get_chapter_styles) para decidir qué inyectar.
     /// - **Rutas CSS relativas**: Los enlaces CSS usan `../` como prefijo porque:
     ///   - Los archivos XHTML están en `OEBPS/Text/`
     ///   - Los CSS están en `OEBPS/Styles/`
@@ -440,7 +443,7 @@ impl GutenCore {
     /// - [Ammonia documentation](https://docs.rs/ammonia)
     /// - [html5ever documentation](https://docs.rs/html5ever)
     /// - [EPUB XHTML Content Documents](https://www.w3.org/TR/epub/#sec-xhtml)
-    pub fn sanitize_to_xhtml(&self, html: &str) -> Result<String> {
+    pub fn sanitize_to_xhtml(&self, id: &str, html: &str) -> Result<String> {
         // 1. Strip dangerous tags/JS
         let cleaned = ammonia::clean(html);
 
@@ -458,10 +461,11 @@ impl GutenCore {
         // 4. Extract just the <body> content so we can wrap it in our own template
         let body_content = extract_body(&body_fragment);
 
-        // 5. Collect CSS hrefs from config (respecting order and auto_inject flag)
+        // 5. Collect CSS hrefs (respecting exceptions, order and auto_inject flag)
         let mut css_links = Vec::new();
         if self.config.auto_inject {
-            for css_id in &self.config.default_styles {
+            let styles_to_inject = self.get_chapter_styles(id);
+            for css_id in &styles_to_inject {
                 if let Some(it) = self.manifest.get(css_id) {
                     if it.media_type == "text/css" {
                         css_links.push(format!(

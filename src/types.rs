@@ -48,8 +48,13 @@ pub enum ResourceKind {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GutenConfig {
+    /// Estilos aplicados por defecto a todos los capítulos si no hay excepción
     pub default_styles: Vec<String>,
+    /// Mapa de excepciones para capítulos específicos (ID capítulo -> Lista IDs estilos)
+    pub exceptions: std::collections::HashMap<String, Vec<String>>,
+    /// Indica si se deben inyectar automáticamente los links CSS en los XHTML
     pub auto_inject: bool,
+    /// Estado persistente de la interfaz del editor
     pub editor_state: std::collections::HashMap<String, String>,
 }
 
@@ -57,6 +62,7 @@ impl Default for GutenConfig {
     fn default() -> Self {
         Self {
             default_styles: Vec::new(),
+            exceptions: std::collections::HashMap::new(),
             auto_inject: true,
             editor_state: std::collections::HashMap::new(),
         }

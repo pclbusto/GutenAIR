@@ -23,10 +23,14 @@ impl GutenCore {
     /// 1. **Validación de integridad** - Verifica que el proyecto sea válido
     ///    llamando a [`validate_integrity`](Self::validate_integrity)
     ///
-    /// 2. **Guardado automático** - Llama a [`save`](Self::save) para asegurar
+    /// 2. **Alineación Total** - Llama a [`normalize_all_styles`](Self::normalize_all_styles)
+    ///    para asegurar que todos los capítulos tengan los enlaces CSS correctos
+    ///    basados en la configuración actual.
+    ///
+    /// 3. **Guardado automático** - Llama a [`save`](Self::save) para asegurar
     ///    que el OPF esté sincronizado con el estado actual
     ///
-    /// 3. **Creación del archivo ZIP** - Construye el archivo `.epub` con:
+    /// 4. **Creación del archivo ZIP** - Construye el archivo `.epub` con:
     ///    - `mimetype` como primer archivo, **sin compresión** (requisito obligatorio)
     ///    - El resto de archivos comprimidos con DEFLATE
     ///    - Preservando la estructura de directorios
@@ -175,7 +179,10 @@ impl GutenCore {
             return Err(crate::error::GutenError::Other(format!("Integrity check failed: {:?}", errors)));
         }
 
-        // 2. Save current state to OPF
+        // 2. Normalize styles in all chapters (total alignment)
+        self.normalize_all_styles()?;
+
+        // 3. Save current state to OPF
         self.save()?;
 
         let file = File::create(output_path)?;
@@ -217,6 +224,42 @@ impl GutenCore {
         }
 
         zip.finish()?;
+        Ok(())
+    }
+
+    /// Realiza una "Alineación Total" de los estilos en todo el proyecto
+    ///
+    /// Este método recorre todos los documentos XHTML listados en el orden de
+    /// lectura (`spine`) y vuelve a aplicar el proceso de sanitización. Esto
+    /// asegura que:
+    /// 1. Todos los `<link>` de CSS estén actualizados según `default_styles`
+    ///    o las `exceptions` actuales.
+    /// 2. No existan enlaces a archivos CSS que hayan sido eliminados.
+    /// 3. El diseño sea consistente en todo el libro antes de la exportación.
+    ///
+    /// # Proceso
+    /// - Itera sobre el `spine`.
+    /// - Ignora recursos que no sean XHTML.
+    /// - Lee el archivo completo, extrae su contenido y lo vuelve a guardar
+    ///   pasándolo por [`sanitize_to_xhtml`](Self::sanitize_to_xhtml).
+    ///
+    /// # Errores
+    /// - `std::io::Error` si falla la lectura/escritura de algún archivo.
+    /// - `GutenError` si falla la sanitización.
+    pub fn normalize_all_styles(&mut self) -> Result<()> {
+        let spine = self.spine.clone();
+        for id in &spine {
+            if let Ok(item) = self.get_item(id) {
+                if item.media_type == "application/xhtml+xml" {
+                    let path = self.get_resource_path(id)?;
+                    if path.exists() {
+                        let content = std::fs::read_to_string(&path)?;
+                        let normalized = self.sanitize_to_xhtml(id, &content)?;
+                        std::fs::write(path, normalized)?;
+                    }
+                }
+            }
+        }
         Ok(())
     }
 }

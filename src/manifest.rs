@@ -574,6 +574,7 @@ impl GutenCore {
     ///
     /// Este es el método principal para crear nuevos capítulos. Automáticamente:
     /// 1. Sanitiza el contenido con [`sanitize_to_xhtml`](Self::sanitize_to_xhtml)
+    ///    - Inyecta automáticamente los estilos (globales o por excepción).
     /// 2. Escribe el archivo en `OEBPS/Text/{id}.xhtml`
     /// 3. Registra el item en el manifiesto
     ///
@@ -619,7 +620,7 @@ impl GutenCore {
             )));
         }
 
-        let clean_xhtml = self.sanitize_to_xhtml(raw_content)?;
+        let clean_xhtml = self.sanitize_to_xhtml(id, raw_content)?;
 
         let opf_dir = self
             .opf_dir
