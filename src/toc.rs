@@ -183,8 +183,8 @@ impl GutenCore {
     /// # Ver también
     ///
     /// - [`update_nav`](Self::update_nav) - Usa este método para generar la TOC
-    /// - [`DocToc`](crate::types::DocToc) - Estructura contenedora de la TOC
-    /// - [`HeadingItem`](crate::types::HeadingItem) - Estructura de cada encabezado
+    /// - [`DocToc`] - Estructura contenedora de la TOC
+    /// - [`HeadingItem`] - Estructura de cada encabezado
     /// - [HTML Heading Elements (MDN)](https://developer.mozilla.org/en-US/docs/Web/HTML/Element/Heading_Elements)
     pub fn scan_headings(&self, href: &str) -> Result<DocToc> {
         let full_path = self

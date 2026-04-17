@@ -32,7 +32,7 @@ impl GutenCore {
     ///
     /// # Ver también
     /// - [`set_metadata`](Self::set_metadata) - Para modificar los metadatos
-    /// - [`BookMetadata`](crate::types::BookMetadata) - Estructura completa de metadatos
+    /// - [`BookMetadata`] - Estructura completa de metadatos
     ///
     pub fn get_metadata(&self) -> Option<&BookMetadata> {
         self.metadata.as_ref()
@@ -118,8 +118,8 @@ impl GutenCore {
     ///
     /// - [`get_metadata`](Self::get_metadata) - Para obtener los metadatos actuales
     /// - [`save`](Self::save) - Para persistir los cambios en disco
-    /// - [`update_modified_date`](Self::update_modified_date) - Para actualizar solo la fecha
-    /// - [`BookMetadata`](crate::types::BookMetadata) - Estructura completa
+    /// - `update_modified_date` - Para actualizar solo la fecha
+    /// - [`BookMetadata`] - Estructura completa
     pub fn set_metadata(
         &mut self,
         title: Option<String>,

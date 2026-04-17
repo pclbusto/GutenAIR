@@ -225,7 +225,7 @@ impl GutenCore {
     /// - [`new`](Self::new) - Para crear una instancia vacía sin cargar datos
     /// - [`new_project`](Self::new_project) - Para crear un proyecto nuevo desde cero
     /// - [`save`](Self::save) - Para guardar cambios después de cargar
-    /// - [`load_config`](Self::load_config) - Método interno que carga la configuración
+    /// - `load_config` - Método interno que carga la configuración
     pub fn open_folder(workdir: impl AsRef<Path>) -> Result<Self> {
         let mut core = Self::new(workdir);
         core.load_container_and_opf()?;
@@ -378,7 +378,7 @@ impl GutenCore {
     /// - [`new`](Self::new) - Para crear una instancia vacía manualmente
     /// - [`open_folder`](Self::open_folder) - Para abrir un proyecto existente
     /// - [`save`](Self::save) - Para guardar cambios después de modificar
-    /// - [`save_config_file`](Self::save_config_file) - Para guardar configuración manualmente
+    /// - `save_config_file` - Para guardar configuración manualmente
     /// - [EPUB 3.0 Specification](https://www.w3.org/publishing/epub3/) - Estándar oficial
     pub fn new_project(root: impl AsRef<Path>, title: &str, lang: &str) -> Result<Self> {
         let root = root.as_ref().to_path_buf();
@@ -970,7 +970,7 @@ impl GutenCore {
     ///
     /// # Ver también
     ///
-    /// - [`parse_opf`](Self::parse_opf) - Método que carga el OPF (operación inversa)
+    /// - `parse_opf` - Método que carga el OPF (operación inversa)
     /// - [`update_nav`](Self::update_nav) - Actualiza la tabla de contenidos
     /// - [`open_folder`](Self::open_folder) - Carga un proyecto para poder guardarlo
     /// - [`new_project`](Self::new_project) - Crea un proyecto nuevo listo para guardar
@@ -1414,7 +1414,7 @@ impl GutenCore {
     ///
     /// - [`save_config_file`](Self::save_config_file) - Guarda la configuración
     /// - [`open_folder`](Self::open_folder) - Método que llama a este
-    /// - [`GutenConfig`](crate::types::GutenConfig) - Estructura de configuración
+    /// - [`GutenConfig`] - Estructura de configuración
     fn load_config(&mut self) -> Result<()> {
         let config_path = self.workdir.join("META-INF").join("gutenAIR.config");
         if config_path.exists() {
@@ -1536,7 +1536,7 @@ impl GutenCore {
     /// - [`load_config`](Self::load_config) - Carga la configuración
     /// - [`save`](Self::save) - Guarda OPF + configuración (llama a este método)
     /// - [`new_project`](Self::new_project) - Crea proyecto con configuración inicial
-    /// - [`GutenConfig`](crate::types::GutenConfig) - Estructura de configuración
+    /// - [`GutenConfig`] - Estructura de configuración
     /// - [serde_json documentation](https://docs.rs/serde_json)
     fn save_config_file(&self) -> Result<()> {
         let config_path = self.workdir.join("META-INF").join("gutenAIR.config");
@@ -1556,7 +1556,7 @@ impl GutenCore {
     /// # Comportamiento
     /// - Verifica que el ID exista en el manifiesto.
     /// - Si el ID ya está en la lista de favoritos, no hace nada (evita duplicados).
-    /// - Solo modifica la memoria; usa [`save`](Self::save) o [`save_config_file`](Self::save_config_file)
+    /// - Solo modifica la memoria; usa [`save`](Self::save) o `save_config_file`
     ///   para persistir el cambio.
     ///
     /// # Argumentos
@@ -1636,7 +1636,7 @@ impl GutenCore {
     /// su propia lista personalizada.
     ///
     /// # Proceso
-    /// 1. Obtiene la lista actual de estilos para el capítulo (vía [`get_chapter_styles`]).
+    /// 1. Obtiene la lista actual de estilos para el capítulo (vía [`get_chapter_styles`](Self::get_chapter_styles)).
     /// 2. Elimina todas las ocurrencias del `id_style` solicitado.
     /// 3. Registra el resultado en `config.exceptions` bajo la clave `id_chapter`.
     ///
@@ -1651,7 +1651,7 @@ impl GutenCore {
     /// - Si el capítulo ya era una excepción, simplemente se elimina el estilo de su lista.
     /// - Si el capítulo no era una excepción, se crea una copia de `default_styles`
     ///   sin el estilo indicado.
-    /// - Este cambio solo afecta a la memoria; llama a [`save`] para persistir.
+    /// - Este cambio solo afecta a la memoria; llama a [`save`](Self::save) para persistir.
     ///
     /// # Ejemplo
     /// ```no_run

@@ -167,7 +167,7 @@ impl GutenCore {
     ///
     /// Para proyectos muy grandes, considera:
     /// - Cachear el resultado después de la primera llamada
-    /// - Usar [`scan_hooks`](Self::scan_hooks) para escanear documentos individualmente
+    /// - Usar `scan_hooks` para escanear documentos individualmente
     ///
     /// # Notas de implementación
     ///
@@ -185,7 +185,7 @@ impl GutenCore {
     ///
     /// # Ver también
     ///
-    /// - [`scan_hooks`](Self::scan_hooks) - Escanea un solo documento
+    /// - `scan_hooks` - Escanea un solo documento
     /// - [`Hook`] - Estructura que representa cada hook encontrado
     /// - [`get_item`](Self::get_item) - Obtiene información de un item del manifiesto
     /// - [HTML id attribute (MDN)](https://developer.mozilla.org/en-US/docs/Web/HTML/Global_attributes/id)

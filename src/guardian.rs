@@ -192,7 +192,7 @@ impl GutenCore {
     ///    - `<br>` → `<br/>`
     ///    - `<img>` → `<img/>`
     ///    - `<hr>` → `<hr/>`
-    ///    - Entre otros (ver [`html5_to_xhtml_void_elements`])
+    ///    - Entre otros (ver la función auxiliar html5_to_xhtml_void_elements)
     ///
     /// 4. **Extracción del cuerpo** - Extrae solo el contenido de `<body>`
     ///    para envolverlo en una plantilla XHTML limpia
@@ -439,7 +439,7 @@ impl GutenCore {
     /// - [`clean_html`](Self::clean_html) - Versión simple sin estructura XHTML
     /// - [`save_chapter`](Self::save_chapter) - Usa este método internamente
     /// - [`text_to_xhtml`](Self::text_to_xhtml) - Para convertir texto plano
-    /// - [`GutenConfig`](crate::types::GutenConfig) - Configuración de inyección CSS
+    /// - [`crate::types::GutenConfig`] - Configuración de inyección CSS
     /// - [Ammonia documentation](https://docs.rs/ammonia)
     /// - [html5ever documentation](https://docs.rs/html5ever)
     /// - [EPUB XHTML Content Documents](https://www.w3.org/TR/epub/#sec-xhtml)
@@ -641,7 +641,7 @@ impl GutenCore {
 ///
 /// # Uso típico
 ///
-/// Esta función se usa internamente en [`sanitize_to_xhtml`](Self::sanitize_to_xhtml):
+/// Esta función se usa internamente en [`GutenCore::sanitize_to_xhtml`](crate::core::GutenCore::sanitize_to_xhtml):
 ///
 /// ```ignore
 /// let dom = html5ever::parse_document(...);
@@ -653,7 +653,7 @@ impl GutenCore {
 ///
 /// # Ver también
 ///
-/// - [`sanitize_to_xhtml`](Self::sanitize_to_xhtml) - Método principal que usa esta función
+/// - [`GutenCore::sanitize_to_xhtml`](crate::core::GutenCore::sanitize_to_xhtml) - Método principal que usa esta función
 /// - [HTML Void Elements (MDN)](https://developer.mozilla.org/en-US/docs/Glossary/Void_element)
 /// - [XHTML Empty Elements](https://www.w3.org/TR/xhtml1/#C_2)
 /// - [html5ever documentation](https://docs.rs/html5ever)
@@ -858,7 +858,7 @@ fn html5_to_xhtml_void_elements(html: &str) -> String {
 /// # Ver también
 ///
 /// - [`sanitize_to_xhtml`](crate::core::GutenCore::sanitize_to_xhtml) - Método principal que usa esta función
-/// - [`html5_to_xhtml_void_elements`](crate::html5_to_xhtml_void_elements) - Otra función auxiliar relacionada
+/// - `html5_to_xhtml_void_elements` - Otra función auxiliar relacionada (función interna)
 /// - [html5ever documentation](https://docs.rs/html5ever)
 fn extract_body(html: &str) -> String {
     let start = html.find("<body>").or_else(|| html.find("<body "));
