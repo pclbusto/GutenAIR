@@ -77,8 +77,8 @@ impl GutenCore {
     /// # Ejemplo básico
     ///
     /// ```no_run
-    /// # use guten_core::GutenCore;
-    /// # use guten_core::error::Result;
+    /// # use gutencore::GutenCore;
+    /// # use gutencore::error::Result;
     /// # fn example() -> Result<()> {
     /// let core = GutenCore::open_folder("./mi_epub")?;
     /// let index = core.build_hook_index()?;
@@ -97,8 +97,8 @@ impl GutenCore {
     /// # Ejemplo: Buscar un hook específico
     ///
     /// ```no_run
-    /// # use guten_core::GutenCore;
-    /// # use guten_core::error::Result;
+    /// # use gutencore::GutenCore;
+    /// # use gutencore::error::Result;
     /// # fn example() -> Result<()> {
     /// let core = GutenCore::open_folder("./mi_epub")?;
     /// let index = core.build_hook_index()?;
@@ -117,8 +117,8 @@ impl GutenCore {
     /// # Ejemplo: Verificar unicidad de IDs
     ///
     /// ```no_run
-    /// # use guten_core::GutenCore;
-    /// # use guten_core::error::Result;
+    /// # use gutencore::GutenCore;
+    /// # use gutencore::error::Result;
     /// # use std::collections::HashSet;
     /// # fn example() -> Result<()> {
     /// let core = GutenCore::open_folder("./mi_epub")?;
@@ -139,8 +139,8 @@ impl GutenCore {
     /// # Ejemplo: Generar tabla de contenidos personalizada
     ///
     /// ```no_run
-    /// # use guten_core::GutenCore;
-    /// # use guten_core::error::Result;
+    /// # use gutencore::GutenCore;
+    /// # use gutencore::error::Result;
     /// # fn example() -> Result<()> {
     /// let core = GutenCore::open_folder("./mi_epub")?;
     /// let index = core.build_hook_index()?;
@@ -226,9 +226,9 @@ impl GutenCore {
     ///
     /// # Ejemplo de uso interno
     ///
-    /// ```no_run
-    /// # use guten_core::GutenCore;
-    /// # use guten_core::error::Result;
+    /// ```ignore
+    /// # use gutencore::GutenCore;
+    /// # use gutencore::error::Result;
     /// # fn example() -> Result<()> {
     /// let core = GutenCore::open_folder("./mi_epub")?;
     ///

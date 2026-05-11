@@ -12,7 +12,7 @@
 use crate::error::{GutenError, Result};
 use crate::types::*;
 use chrono::{SecondsFormat, Utc};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -33,7 +33,7 @@ pub const NS_OCF: &str = "urn:oasis:names:tc:opendocument:xmlns:container";
 /// # Ejemplo
 ///
 /// ```no_run
-/// # use guten_core::GutenCore;
+/// # use gutencore::GutenCore;
 /// let mut core = GutenCore::open_folder("mi_epub/")?;
 ///
 /// // Acceder al directorio de trabajo
@@ -52,6 +52,7 @@ pub const NS_OCF: &str = "urn:oasis:names:tc:opendocument:xmlns:container";
 /// }
 /// # Ok::<_, Box<dyn std::error::Error>>(())
 /// ```
+#[derive(Debug)]
 pub struct GutenCore {
     /// Directorio raíz del proyecto EPUB descomprimido
     ///
@@ -122,9 +123,57 @@ pub struct GutenCore {
     /// Este campo es **extensión propia** y no afecta la compatibilidad EPUB.
     /// Los lectores de EPUB estándar ignoran este archivo.
     pub config: GutenConfig,
+
+    /// Índice estructural SQLite. `None` si el proyecto no se ha indexado aún.
+    pub(crate) index_db: Option<crate::index::IndexDb>,
+
+    /// `true` si el último `save_chapter` no pudo actualizar el índice SQLite.
+    /// La UI puede usarlo para mostrar un aviso y llamar a `build_index()`.
+    pub index_dirty: bool,
 }
 
 impl GutenCore {
+    /// Genera un documento XHTML bien formado siguiendo el estándar EPUB 3.0
+    ///
+    /// Este método centraliza la creación de la estructura base de todos los
+    /// capítulos y documentos XHTML del libro. Asegura que se incluyan todos
+    /// los elementos requeridos:
+    /// - Declaración XML y namespace XHTML
+    /// - Atributos `lang` y `xml:lang`
+    /// - Meta charset UTF-8
+    /// - Elemento `<title>` obligatorio
+    /// - Enlaces a CSS (opcional)
+    /// - Contenido del `<body>`
+    ///
+    /// # Argumentos
+    ///
+    /// * `lang` - Código de idioma (ej: "es", "en-US")
+    /// * `title` - Título del documento (aparece en la pestaña/ventana)
+    /// * `head_links` - Fragmento HTML con etiquetas `<link>` o `<meta>` adicionales para el `<head>`
+    /// * `body_content` - El contenido HTML que irá dentro de la etiqueta `<body>`
+    ///
+    /// # Retorna
+    ///
+    /// * `String` - El documento XHTML completo listo para ser guardado
+    pub fn build_xhtml(lang: &str, title: &str, head_links: &str, body_content: &str) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="{lang}" xml:lang="{lang}">
+<head>
+  <meta charset="utf-8"/>
+  <title>{title}</title>{head_links}
+</head>
+<body>
+{body_content}
+</body>
+</html>"#,
+            lang = lang,
+            title = title,
+            head_links = head_links,
+            body_content = body_content
+        )
+    }
+
     /// Este método solo inicializa la estructura con el directorio de trabajo,
     /// pero **no** carga ningún archivo EPUB existente. Los campos `metadata`,
     /// `manifest` y `spine` quedarán vacíos.
@@ -136,7 +185,7 @@ impl GutenCore {
     /// # Ejemplo
     ///
     /// ```no_run
-    /// # use guten_core::GutenCore;
+    /// # use gutencore::GutenCore;
     /// let core = GutenCore::new("./mi_proyecto");
     ///
     /// // En este punto, el core está vacío:
@@ -157,6 +206,8 @@ impl GutenCore {
             manifest: HashMap::new(),
             spine: Vec::new(),
             config: GutenConfig::default(),
+            index_db: None,
+            index_dirty: false,
         }
     }
 
@@ -197,7 +248,7 @@ impl GutenCore {
     /// # Ejemplo básico
     ///
     /// ```no_run
-    /// # use guten_core::GutenCore;
+    /// # use gutencore::GutenCore;
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let core = GutenCore::open_folder("./mi_libro_epub")?;
     ///
@@ -231,7 +282,137 @@ impl GutenCore {
         core.load_container_and_opf()?;
         core.parse_opf()?;
         core.load_config()?;
+        core.build_index()?;
         Ok(core)
+    }
+
+    /// Construye (o reconstruye) el índice SQLite escaneando todos los capítulos XHTML.
+    ///
+    /// Crea `.gutenair.db` en el `workdir` si no existe. Llama automáticamente
+    /// desde `open_folder`. Puede llamarse manualmente para forzar una reconstrucción.
+    pub fn build_index(&mut self) -> Result<()> {
+        let db = crate::index::IndexDb::open_or_create(&self.workdir)?;
+        db.clear_all()?;
+
+        let opf_dir = self
+            .opf_dir
+            .as_ref()
+            .ok_or_else(|| GutenError::InvalidProject("OPF dir not set".to_string()))?
+            .clone();
+
+        let items: Vec<(String, String)> = self
+            .manifest
+            .values()
+            .filter(|i| i.media_type == "application/xhtml+xml")
+            .map(|i| (i.id.clone(), i.href.clone()))
+            .collect();
+
+        for (id, href) in items {
+            let path = opf_dir.join(&href);
+            if let Ok(content) = fs::read_to_string(&path) {
+                db.index_xhtml(&id, &content)?;
+            }
+        }
+
+        self.index_db = Some(db);
+        self.index_dirty = false;
+        Ok(())
+    }
+
+    /// Busca texto en todos los capítulos indexados usando FTS5.
+    ///
+    /// Devuelve hasta 50 resultados ordenados por relevancia. Cada resultado
+    /// incluye el chapter_id, block_id, tag HTML y un snippet con la coincidencia
+    /// envuelta en `<mark>…</mark>`.
+    ///
+    /// Devuelve `Ok(vec![])` si el índice no está disponible.
+    pub fn search(&self, query: &str) -> Result<Vec<crate::index::SearchResult>> {
+        match &self.index_db {
+            Some(db) => db.search(query),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// Devuelve los `chapter_id` que tienen links que resuelven exactamente a
+    /// `target_chapter#hook_id`.
+    ///
+    /// Usa la misma resolución de rutas que `validate_links()` para evitar falsos
+    /// positivos cuando el mismo `hook_id` existe en varios capítulos.
+    pub fn get_links_to(&self, target_chapter: &str, hook_id: &str) -> Result<Vec<String>> {
+        let db = match &self.index_db {
+            Some(db) => db,
+            None => return Ok(Vec::new()),
+        };
+
+        let mut referrers: Vec<String> = Vec::new();
+        for (from_chapter, href) in db.get_all_links()? {
+            if let Some((resolved_ch, Some(resolved_hook))) = self.resolve_link(&from_chapter, &href) {
+                if resolved_ch == target_chapter && resolved_hook == hook_id
+                    && !referrers.contains(&from_chapter)
+                {
+                    referrers.push(from_chapter);
+                }
+            }
+        }
+        Ok(referrers)
+    }
+
+    /// Detecta links internos rotos en todo el proyecto.
+    ///
+    /// - `#id` valida solo contra hooks del mismo capítulo fuente.
+    /// - `archivo.xhtml#id` verifica que el archivo exista en el manifiesto
+    ///   y que el hook exista en ese capítulo específico.
+    ///
+    /// Devuelve `(from_chapter, href)` para cada link roto.
+    pub fn validate_links(&self) -> Result<Vec<(String, String)>> {
+        let db = match &self.index_db {
+            Some(db) => db,
+            None => return Ok(Vec::new()),
+        };
+
+        let mut orphans = Vec::new();
+        for (from_chapter, href) in db.get_all_links()? {
+            match self.resolve_link(&from_chapter, &href) {
+                None => orphans.push((from_chapter, href)),
+                Some((target_ch, Some(hook_id))) => {
+                    if !db.hook_exists(&target_ch, &hook_id)? {
+                        orphans.push((from_chapter, href));
+                    }
+                }
+                Some((_, None)) => {} // link a archivo sin fragmento — existe en manifiesto
+            }
+        }
+        Ok(orphans)
+    }
+
+    /// Resuelve un `href` relativo al capítulo fuente a `(chapter_id, Option<hook_id>)`.
+    ///
+    /// Devuelve `None` si el archivo destino no está en el manifiesto (link externo o roto).
+    fn resolve_link(&self, from_chapter: &str, href: &str) -> Option<(String, Option<String>)> {
+        if let Some(hook_id) = href.strip_prefix('#') {
+            // Fragmento local: el destino es el propio capítulo fuente.
+            return Some((from_chapter.to_string(), Some(hook_id.to_string())));
+        }
+
+        let (file_part, fragment) = match href.find('#') {
+            Some(pos) => (href[..pos].to_string(), Some(href[pos + 1..].to_string())),
+            None => (href.to_string(), None::<String>),
+        };
+
+        let resolved = self
+            .manifest
+            .get(from_chapter)
+            .and_then(|src| std::path::Path::new(&src.href).parent())
+            .map(|dir| normalize_rel_path(&dir.join(&file_part)))
+            .unwrap_or(file_part);
+
+        let target_id = self
+            .manifest
+            .values()
+            .find(|item| item.href == resolved)
+            .map(|item| item.id.clone())?;
+
+        Some((target_id, fragment))
     }
 
     /// Crea un nuevo proyecto EPUB desde cero
@@ -257,7 +438,11 @@ impl GutenCore {
     ///     │   └── nav.xhtml
     ///     ├── Styles/
     ///     │   └── style.css
-    ///     └── Images/
+    ///     ├── Images/
+    ///     ├── Fonts/
+    ///     ├── Audio/
+    ///     ├── Video/
+    ///     └── Misc/
     /// ```
     ///
     /// # Archivos creados automáticamente
@@ -306,7 +491,7 @@ impl GutenCore {
     /// # Ejemplo básico
     ///
     /// ```no_run
-    /// # use guten_core::GutenCore;
+    /// # use gutencore::GutenCore;
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// // Crear un nuevo libro en español
     /// let mut core = GutenCore::new_project("./mi_novela", "El Gran Viaje", "es")?;
@@ -326,7 +511,7 @@ impl GutenCore {
     /// # Ejemplo con diferentes idiomas
     ///
     /// ```no_run
-    /// # use guten_core::GutenCore;
+    /// # use gutencore::GutenCore;
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// // Libro en inglés
     /// let en_book = GutenCore::new_project("./english_book", "My Story", "en")?;
@@ -340,8 +525,172 @@ impl GutenCore {
     /// # Ejemplo con manejo de errores
     ///
     /// ```no_run
-    /// # use guten_core::GutenCore;
-    /// # use guten_core::error::GutenError;
+    /// # use gutencore::GutenCore;
+    /// # use gutencore::error::GutenError;
+    /// # fn main() {
+    /// match GutenCore::new_project("./directorio_existente", "Mi Libro", "es") {
+    ///     Ok(core) => println!("Proyecto creado exitosamente"),
+    ///     Err(GutenError::InvalidProject(msg)) => {
+    ///         eprintln!("Error: {}", msg);  // "Target directory is not empty"
+    ///     }
+    ///     Err(e) => eprintln!("Error de IO: {}", e),
+    /// }
+    /// # }
+    /// ```
+    ///
+    /// # Notas importantes
+    ///
+    /// * **El directorio no debe contener archivos previos** - Si el directorio
+    ///   existe y no está vacío, el método fallará para evitar sobrescribir datos.
+    /// * **UUID único** - Se genera automáticamente un identificador UUID v4
+    ///   para el libro.
+    /// * **Fecha de modificación** - Se establece automáticamente a la hora actual
+    ///   en formato RFC 3339.
+    /// * **Configuración persistente** - Se guarda automáticamente en `META-INF/gutenAIR.config`
+    /// * **Proyecto cargado automáticamente** - A diferencia de [`new`](Self::new),
+    ///   este método deja el core en estado cargado (con metadata, manifest, etc.).
+    ///
+    /// # Diferencias con otros constructores
+    ///
+    /// | Método | Uso | Estado resultante |
+    /// |--------|-----|-------------------|
+    /// | [`new`](Self::new) | Crear estructura vacía | Sin datos cargados |
+    /// | [`open_folder`](Self::open_folder) | Abrir proyecto existente | Datos cargados |
+    /// | **`new_project`** | Crear desde cero | Datos cargados |
+    ///
+    /// # Ver también
+    ///
+    /// - [`new`](Self::new) - Para crear una instancia vacía manualmente
+    /// - [`open_folder`](Self::open_folder) - Para abrir un proyecto existente
+    /// - [`save`](Self::save) - Para guardar cambios después de modificar
+    /// - `save_config_file` - Para guardar configuración manualmente
+    /// - [EPUB 3.0 Specification](https://www.w3.org/publishing/epub3/) - Estándar oficial
+    /// Retorna la lista de carpetas que se crean en la estructura base de un proyecto.
+    pub fn get_base_folders() -> Vec<&'static str> {
+        vec![
+            "META-INF",
+            "OEBPS/Text",
+            "OEBPS/Styles",
+            "OEBPS/Images",
+            "OEBPS/Fonts",
+            "OEBPS/Audio",
+            "OEBPS/Video",
+            "OEBPS/Misc",
+        ]
+    }
+
+    /// Crea un nuevo proyecto EPUB 3 desde cero en la ruta especificada.
+    ///
+    /// Este método automatiza la creación de toda la estructura necesaria
+    /// para un EPUB 3.0 válido. Crea un proyecto mínimo pero funcional que puede
+    /// usarse como punto de partida para desarrollar un ebook completo.
+    ///
+    /// # Estructura generada
+    ///
+    /// El método crea la siguiente estructura de directorios y archivos:
+    ///
+    /// ```text
+    /// root/
+    /// ├── mimetype
+    /// ├── META-INF/
+    /// │   ├── container.xml
+    /// │   └── gutenAIR.config      (configuración del editor)
+    /// └── OEBPS/
+    ///     ├── content.opf
+    ///     ├── Text/
+    ///     │   ├── chap1.xhtml
+    ///     │   └── nav.xhtml
+    ///     ├── Styles/
+    ///     │   └── style.css
+    ///     ├── Images/
+    ///     ├── Fonts/
+    ///     ├── Audio/
+    ///     ├── Video/
+    ///     └── Misc/
+    /// ```
+    ///
+    /// # Archivos creados automáticamente
+    ///
+    /// * **`mimetype`** - Identificador MIME del EPUB (`application/epub+zip`)
+    /// * **`container.xml`** - Punto de entrada que localiza el OPF
+    /// * **`gutenAIR.config`** - Archivo JSON con configuración del editor
+    /// * **`content.opf`** - Package document con metadatos, manifiesto y spine
+    /// * **`chap1.xhtml`** - Archivo de ejemplo con contenido inicial
+    /// * **`nav.xhtml`** - Tabla de contenidos básica
+    /// * **`style.css`** - Hoja de estilos minimalista
+    ///
+    /// # Configuración inicial
+    ///
+    /// El proyecto se crea con una configuración predeterminada que:
+    /// - Registra `style` como estilo predeterminado en `default_styles`
+    /// - Incluye metadatos básicos del editor
+    ///
+    /// # Argumentos
+    ///
+    /// * `root` - Directorio raíz donde se creará el proyecto.
+    ///   **Debe estar vacío** o no existir previamente.
+    /// * `title` - Título del libro. Se usará en los metadatos y navegación.
+    /// * `lang` - Código de idioma según RFC 5646 (ej: `"es"`, `"en"`, `"fr-CA"`).
+    ///
+    /// # Retorna
+    ///
+    /// * `Result<Self>` - Una instancia de `GutenCore` con el proyecto recién creado
+    ///   ya cargado en memoria (equivalente a llamar [`open_folder`](Self::open_folder)
+    ///   en el directorio recién creado).
+    ///
+    /// # Errores
+    ///
+    /// Este método puede retornar los siguientes errores:
+    ///
+    /// * `GutenError::InvalidProject` - Si el directorio de destino **no está vacío**
+    /// * `std::io::Error` - Si falla alguna operación de creación de archivos/carpetas:
+    ///   - Permisos insuficientes
+    ///   - Disco lleno
+    ///   - Rutas inválidas
+    /// * `GutenError::Other` - Si falla la serialización del archivo de configuración
+    ///
+    /// Además, puede propagar errores de [`open_folder`](Self::open_folder) si la
+    /// carga posterior del proyecto falla (aunque esto es poco probable).
+    ///
+    /// # Ejemplo básico
+    ///
+    /// ```no_run
+    /// # use gutencore::GutenCore;
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// // Crear un nuevo libro en español
+    /// let mut core = GutenCore::new_project("./mi_novela", "El Gran Viaje", "es")?;
+    ///
+    /// // Verificar que se creó correctamente
+    /// if let Some(metadata) = &core.metadata {
+    ///     println!("Título: {}", metadata.title);     // "El Gran Viaje"
+    ///     println!("Idioma: {}", metadata.language);  // "es"
+    /// }
+    ///
+    /// // La configuración ya tiene el estilo predeterminado
+    /// println!("Estilos: {:?}", core.config.default_styles); // ["style"]
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Ejemplo con diferentes idiomas
+    ///
+    /// ```no_run
+    /// # use gutencore::GutenCore;
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// // Libro en inglés
+    /// let en_book = GutenCore::new_project("./english_book", "My Story", "en")?;
+    ///
+    /// // Libro en francés con variante regional
+    /// let fr_book = GutenCore::new_project("./french_book", "Mon Histoire", "fr-CA")?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Ejemplo con manejo de errores
+    ///
+    /// ```no_run
+    /// # use gutencore::GutenCore;
+    /// # use gutencore::error::GutenError;
     /// # fn main() {
     /// match GutenCore::new_project("./directorio_existente", "Mi Libro", "es") {
     ///     Ok(core) => println!("Proyecto creado exitosamente"),
@@ -389,10 +738,9 @@ impl GutenCore {
         }
 
         // Create folders
-        fs::create_dir_all(root.join("META-INF"))?;
-        fs::create_dir_all(root.join("OEBPS/Text"))?;
-        fs::create_dir_all(root.join("OEBPS/Styles"))?;
-        fs::create_dir_all(root.join("OEBPS/Images"))?;
+        for folder in Self::get_base_folders() {
+            fs::create_dir_all(root.join(folder))?;
+        }
 
         // mimetype
         fs::write(root.join("mimetype"), "application/epub+zip")?;
@@ -442,35 +790,32 @@ impl GutenCore {
             "body { font-family: serif; }",
         )?;
 
-        let chap1 = format!(
-            r#"<?xml version="1.0" encoding="UTF-8"?>
-<html xmlns="http://www.w3.org/1999/xhtml" lang="{lang}">
-<head>
-  <title>Chapter 1</title>
-  <link rel="stylesheet" type="text/css" href="../Styles/style.css"/>
-</head>
-<body>
-  <h1>Chapter 1</h1>
-  <p>Hello, EPUB!</p>
-</body>
-</html>"#,
-            lang = lang
+        let chap1 = Self::build_xhtml(
+            lang,
+            "Chapter 1",
+            "\n  <link rel=\"stylesheet\" type=\"text/css\" href=\"../Styles/style.css\"/>",
+            "  <h1>Chapter 1</h1>\n  <p>Hello, EPUB!</p>",
         );
         fs::write(root.join("OEBPS/Text/chap1.xhtml"), chap1)?;
 
         let nav = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
-<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="{lang}">
-<head><title>TOC</title></head>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="{lang}" xml:lang="{lang}">
+<head>
+  <meta charset="utf-8"/>
+  <title>TOC</title>
+</head>
 <body>
   <nav epub:type="toc" id="toc">
+    <h1>{title}</h1>
     <ol>
       <li><a href="chap1.xhtml">Chapter 1</a></li>
     </ol>
   </nav>
 </body>
 </html>"#,
-            lang = lang
+            lang = lang,
+            title = title
         );
         fs::write(root.join("OEBPS/Text/nav.xhtml"), nav)?;
 
@@ -527,9 +872,9 @@ impl GutenCore {
     ///
     /// # Ejemplo de uso interno
     ///
-    /// ```no_run
-    /// # use guten_core::GutenCore;
-    /// # use guten_core::Result;
+    /// ```ignore
+    /// # use gutencore::GutenCore;
+    /// # use gutencore::error::Result;
     /// # fn example() -> Result<()> {
     /// let mut core = GutenCore::new("./mi_epub");
     /// core.load_container_and_opf()?;
@@ -676,9 +1021,9 @@ impl GutenCore {
     ///
     /// # Ejemplo de uso interno
     ///
-    /// ```no_run
-    /// # use guten_core::GutenCore;
-    /// # use guten_core::Result;
+    /// ```ignore
+    /// # use gutencore::GutenCore;
+    /// # use gutencore::Result;
     /// # fn example() -> Result<()> {
     /// let mut core = GutenCore::new("./mi_epub");
     /// core.load_container_and_opf()?;  // Primero carga container.xml
@@ -904,7 +1249,7 @@ impl GutenCore {
     /// # Ejemplo básico
     ///
     /// ```no_run
-    /// # use guten_core::GutenCore;
+    /// # use gutencore::{GutenCore, ManifestItem};
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let mut core = GutenCore::open_folder("./mi_epub")?;
     ///
@@ -933,8 +1278,8 @@ impl GutenCore {
     /// # Ejemplo con manejo de errores
     ///
     /// ```no_run
-    /// # use guten_core::GutenCore;
-    /// # use guten_core::error::GutenError;
+    /// # use gutencore::GutenCore;
+    /// # use gutencore::error::GutenError;
     /// let mut core = GutenCore::new("./proyecto_vacio");
     ///
     /// // Intentar guardar sin haber cargado un proyecto
@@ -1163,7 +1508,7 @@ impl GutenCore {
     /// # Ejemplo de uso manual
     ///
     /// ```no_run
-    /// # use guten_core::GutenCore;
+    /// # use gutencore::GutenCore;
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let mut core = GutenCore::open_folder("./mi_epub")?;
     ///
@@ -1303,8 +1648,11 @@ impl GutenCore {
             .unwrap_or("en");
         let nav_xhtml = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
-<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="{}">
-<head><title>{}</title></head>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="{}" xml:lang="{}">
+<head>
+  <meta charset="utf-8"/>
+  <title>{}</title>
+</head>
 <body>
   <nav epub:type="toc" id="toc">
     <h1>{}</h1>
@@ -1314,6 +1662,7 @@ impl GutenCore {
   </nav>
 </body>
 </html>"#,
+            lang,
             lang,
             title,
             title,
@@ -1388,9 +1737,9 @@ impl GutenCore {
     ///
     /// # Ejemplo de uso interno
     ///
-    /// ```no_run
-    /// # use guten_core::GutenCore;
-    /// # use guten_core::error::Result;
+    /// ```ignore
+    /// # use gutencore::GutenCore;
+    /// # use gutencore::error::Result;
     /// # fn example() -> Result<()> {
     /// let mut core = GutenCore::new("./mi_epub");
     /// core.load_config()?;
@@ -1481,9 +1830,9 @@ impl GutenCore {
     ///
     /// # Ejemplo de uso manual
     ///
-    /// ```no_run
-    /// # use guten_core::GutenCore;
-    /// # use guten_core::error::Result;
+    /// ```ignore
+    /// # use gutencore::GutenCore;
+    /// # use gutencore::error::Result;
     /// # fn example() -> Result<()> {
     /// let mut core = GutenCore::open_folder("./mi_epub")?;
     ///
@@ -1500,9 +1849,9 @@ impl GutenCore {
     ///
     /// # Ejemplo con manejo de errores
     ///
-    /// ```no_run
-    /// # use guten_core::GutenCore;
-    /// # use guten_core::error::GutenError;
+    /// ```ignore
+    /// # use gutencore::GutenCore;
+    /// # use gutencore::error::GutenError;
     /// let core = GutenCore::new("./proyecto_sin_permisos");
     ///
     /// match core.save_config_file() {
@@ -1567,7 +1916,7 @@ impl GutenCore {
     ///
     /// # Ejemplo
     /// ```no_run
-    /// # use guten_core::GutenCore;
+    /// # use gutencore::GutenCore;
     /// let mut core = GutenCore::open_folder("./mi_epub")?;
     ///
     /// // Registrar y activar un estilo global
@@ -1615,10 +1964,13 @@ impl GutenCore {
     ///
     /// # Ejemplo
     /// ```no_run
-    /// # use guten_core::GutenCore;
+    /// # use gutencore::GutenCore;
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let core = GutenCore::open_folder("./mi_epub")?;
     /// let estilos = core.get_chapter_styles("chap1");
     /// println!("Estilos aplicados a chap1: {:?}", estilos);
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn get_chapter_styles(&self, id_chapter: &str) -> Vec<String> {
         self.config
@@ -1626,6 +1978,96 @@ impl GutenCore {
             .get(id_chapter)
             .cloned()
             .unwrap_or_else(|| self.config.default_styles.clone())
+    }
+
+    /// Genera un catálogo de estilos disponibles para un capítulo específico
+    ///
+    /// Este método analiza todas las hojas de estilo (.css) vinculadas al capítulo
+    /// (según la jerarquía de `default_styles` y `exceptions`) y extrae las clases
+    /// disponibles.
+    ///
+    /// # Filtrado Inteligente
+    /// El Core clasifica los estilos automáticamente:
+    /// - **Bloque**: Si el selector especifica etiquetas de bloque (ej: `p.cita`, `h2.seccion`).
+    /// - **Línea**: Si el selector usa etiquetas de línea (ej: `span.glosario`) o si
+    ///   es una clase genérica (ej: `.alerta`). En el caso de clases genéricas,
+    ///   sugiere usar `span` como contenedor.
+    ///
+    /// # Argumentos
+    /// * `id_chapter` - ID del capítulo XHTML para el cual se desea el catálogo.
+    ///
+    /// # Retorna
+    /// * `Result<Vec<StyleCatalog>>` - Una lista de catálogos, uno por cada archivo CSS vinculado.
+    pub fn get_style_catalog(&self, id_chapter: &str) -> Result<Vec<StyleCatalog>> {
+        let style_ids = self.get_chapter_styles(id_chapter);
+        let mut catalogs = Vec::new();
+
+        for style_id in style_ids {
+            if let Some(item) = self.manifest.get(&style_id) {
+                if item.media_type == "text/css" {
+                    let path = self.get_resource_path(&style_id)?;
+                    let content = fs::read_to_string(path)?;
+                    catalogs.push(self.parse_css_to_catalog(&item.href, &content));
+                }
+            }
+        }
+        Ok(catalogs)
+    }
+
+    /// Analiza el contenido de un CSS y extrae selectores clasificados
+    fn parse_css_to_catalog(&self, href: &str, content: &str) -> StyleCatalog {
+        let mut bloque = Vec::new();
+        let mut linea = Vec::new();
+        let mut seen_classes = HashSet::new();
+
+        // Regex para capturar [tag].clase o solo .clase
+        // Grupo 1: Tag opcional (ej: p, span, h1)
+        // Grupo 2: Nombre de la clase (ej: mi-estilo)
+        let re = regex::Regex::new(r"(?m)(?:^|\s|,)([a-zA-Z0-9-]*)?\.([a-zA-Z0-9_-]+)").unwrap();
+
+        for cap in re.captures_iter(content) {
+            let tag = cap.get(1).map(|m| m.as_str()).filter(|s| !s.is_empty());
+            let class = cap.get(2).map(|m| m.as_str()).unwrap();
+
+            // Evitar duplicados en el mismo archivo
+            if seen_classes.contains(class) {
+                continue;
+            }
+            seen_classes.insert(class.to_string());
+
+            let entry = StyleEntry {
+                clase: class.to_string(),
+                descripcion: None, // TODO: Extraer de comentarios JSDoc-style arriba de la regla
+                tag_sugerido: tag.map(|s| s.to_string()),
+            };
+
+            // Filtrado Inteligente basado en el tag
+            let is_block = if let Some(t) = tag {
+                match t.to_lowercase().as_str() {
+                    "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "div" | "blockquote"
+                    | "section" | "article" | "li" | "header" | "footer" => true,
+                    _ => false,
+                }
+            } else {
+                false
+            };
+
+            if is_block {
+                bloque.push(entry);
+            } else {
+                // Si es .clase (genérica) o etiquetas de línea como span/em/strong
+                let mut line_entry = entry.clone();
+                if tag.is_none() {
+                    line_entry.tag_sugerido = Some("span".to_string());
+                }
+                linea.push(line_entry);
+            }
+        }
+
+        StyleCatalog {
+            archivo_origen: href.to_string(),
+            estilos: StyleGroup { bloque, linea },
+        }
     }
 
     /// Elimina el vínculo de una hoja de estilo de un capítulo específico
@@ -1655,7 +2097,7 @@ impl GutenCore {
     ///
     /// # Ejemplo
     /// ```no_run
-    /// # use guten_core::GutenCore;
+    /// # use gutencore::GutenCore;
     /// let mut core = GutenCore::open_folder("./mi_epub")?;
     ///
     /// // El estilo 'oscuro' es global, pero no lo queremos en la portada
@@ -1686,4 +2128,246 @@ impl GutenCore {
 
         Ok(())
     }
+
+    /// Renombra uno o más archivos en el proyecto EPUB y actualiza todas las referencias
+    ///
+    /// Este es un proceso complejo que garantiza la integridad del libro.
+    /// Realiza una validación previa (dry run) para evitar colisiones antes
+    /// de modificar el disco.
+    ///
+    /// # Proceso
+    ///
+    /// 1. **Validación**: Verifica que los IDs existan, los nuevos nombres sean válidos
+    ///    y no haya colisiones con archivos existentes.
+    /// 2. **Renombrado físico**: Cambia los nombres en el sistema de archivos (usando nombres temporales para evitar colisiones A->B, B->C).
+    /// 3. **Actualización de memoria**: Actualiza el manifiesto interno (`item.href`).
+    /// 4. **Actualización de referencias**: Escanea todos los archivos XHTML y CSS
+    ///    para corregir enlaces (`href`, `src`, `url()`, `@import`).
+    /// 5. **Actualización de navegación**: Regenera `nav.xhtml` y `toc.ncx` (si existe).
+    ///
+    /// # Argumentos
+    ///
+    /// * `renames` - `HashMap<String, String>` donde la clave es el ID del recurso
+    ///   y el valor es la nueva ruta relativa al directorio OPF.
+    ///
+    /// # Errores
+    ///
+    /// * `GutenError::Manifest` - Si algún ID no existe o hay colisiones de nombres.
+    /// * `GutenError::Io` - Si fallan las operaciones de archivos.
+    ///
+    /// # Ejemplo
+    ///
+    /// ```no_run
+    /// # use gutencore::GutenCore;
+    /// # use std::collections::HashMap;
+    /// let mut core = GutenCore::open_folder("./mi_epub")?;
+    /// let mut renames = HashMap::new();
+    /// renames.insert("chap1".to_string(), "Text/introduccion.xhtml".to_string());
+    /// renames.insert("logo".to_string(), "Images/brand.png".to_string());
+    /// 
+    /// core.rename_files(renames)?;
+    /// core.save()?; // Persistir cambios en content.opf
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn rename_files(&mut self, renames: HashMap<String, String>) -> Result<()> {
+        let opf_dir = self
+            .opf_dir
+            .as_ref()
+            .ok_or_else(|| GutenError::InvalidProject("OPF dir not loaded".into()))?;
+
+        // 1. Validar IDs y Colisiones (Dry Run)
+        let mut to_rename = Vec::new();
+        let mut target_hrefs = HashSet::new();
+        let vacated_hrefs: HashSet<String> = renames
+            .keys()
+            .filter_map(|id| self.manifest.get(id).map(|it| it.href.clone()))
+            .collect();
+
+        for (id, new_href) in &renames {
+            let item = self.manifest.get(id).ok_or_else(|| {
+                GutenError::Manifest(format!("ID '{}' not found in manifest", id))
+            })?;
+
+            let sanitized_href = self.sanitize_href(new_href);
+
+            // Colisión con otros archivos en el disco que NO están en la lista de renamings (no van a ser movidos)
+            let target_path = opf_dir.join(&sanitized_href);
+            if target_path.exists() && !vacated_hrefs.contains(&sanitized_href) {
+                return Err(GutenError::Manifest(format!(
+                    "Target file already exists and is not being moved: {}",
+                    sanitized_href
+                )));
+            }
+
+            if target_hrefs.contains(&sanitized_href) {
+                return Err(GutenError::Manifest(format!(
+                    "Duplicate target href in renaming list: {}",
+                    sanitized_href
+                )));
+            }
+            target_hrefs.insert(sanitized_href.clone());
+
+            to_rename.push((id.clone(), item.href.clone(), sanitized_href));
+        }
+
+        // 2. Renombrado físico seguro (Fase 1: Mover a temporal)
+        for (id, old_href, _) in &to_rename {
+            let old_path = opf_dir.join(old_href);
+            let temp_path = opf_dir.join(format!("{}.tmp_rename", id));
+            fs::rename(old_path, temp_path)?;
+        }
+
+        // 2. Renombrado físico seguro (Fase 2: Mover a destino final)
+        for (id, _, new_href) in &to_rename {
+            let temp_path = opf_dir.join(format!("{}.tmp_rename", id));
+            let new_path = opf_dir.join(new_href);
+
+            if let Some(parent) = new_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+
+            fs::rename(temp_path, new_path)?;
+
+            // Actualizar manifiesto en memoria
+            if let Some(item) = self.manifest.get_mut(id) {
+                item.href = new_href.clone();
+            }
+        }
+
+        // 3. Actualización de referencias globales en archivos XHTML y CSS
+        self.update_all_references(&to_rename)?;
+
+        // 4. Actualizar archivos de navegación
+        self.update_nav()?;
+        self.update_ncx_if_exists(&to_rename)?;
+
+        Ok(())
+    }
+
+    /// Sanitiza una ruta href para cumplir con los estándares de EPUB
+    fn sanitize_href(&self, href: &str) -> String {
+        href.replace('\\', "/")
+            .split('/')
+            .map(|part| {
+                part.chars()
+                    .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-' || *c == '.')
+                    .collect::<String>()
+            })
+            .collect::<Vec<String>>()
+            .join("/")
+    }
+
+    /// Escanea todos los recursos XHTML y CSS para actualizar enlaces rotos por el renombrado
+    fn update_all_references(&self, renames: &[(String, String, String)]) -> Result<()> {
+        let opf_dir = self
+            .opf_dir
+            .as_ref()
+            .ok_or_else(|| GutenError::InvalidProject("OPF dir not loaded".into()))?;
+
+        for item in self.manifest.values() {
+            // Solo procesamos archivos que pueden contener referencias (XHTML y CSS)
+            if item.media_type == "application/xhtml+xml" || item.media_type == "text/css" {
+                let file_path = opf_dir.join(&item.href);
+                if !file_path.exists() {
+                    continue;
+                }
+
+                let content = fs::read_to_string(&file_path)?;
+                let mut updated_content = content.clone();
+                let mut changed = false;
+
+                let file_dir = file_path.parent().unwrap();
+
+                for (_id, old_href, new_href) in renames {
+                    let old_target = opf_dir.join(old_href);
+                    let new_target = opf_dir.join(new_href);
+
+                    // Calcular rutas relativas desde el archivo actual hacia el antiguo y nuevo destino
+                    if let Some(rel_old) = pathdiff::diff_paths(&old_target, file_dir) {
+                        if let Some(rel_new) = pathdiff::diff_paths(&new_target, file_dir) {
+                            let rel_old_str = rel_old.to_string_lossy().replace('\\', "/");
+                            let rel_new_str = rel_new.to_string_lossy().replace('\\', "/");
+
+                            if rel_old_str != rel_new_str && updated_content.contains(&rel_old_str) {
+                                // Reemplazo global de la ruta relativa
+                                // NOTA: Esto es un reemplazo de texto simple. En una implementación futura
+                                // se podría usar un parser de HTML/CSS para mayor precisión.
+                                updated_content = updated_content.replace(&rel_old_str, &rel_new_str);
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+
+                if changed {
+                    fs::write(file_path, updated_content)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Actualiza el archivo toc.ncx si existe en el proyecto
+    fn update_ncx_if_exists(&self, renames: &[(String, String, String)]) -> Result<()> {
+        // Buscar el item del NCX en el manifiesto por su media-type
+        let ncx_item = self
+            .manifest
+            .values()
+            .find(|it| it.media_type == "application/x-dtbncx+xml");
+
+        if let Some(item) = ncx_item {
+            let opf_dir = self.opf_dir.as_ref().unwrap();
+            let ncx_path = opf_dir.join(&item.href);
+            if ncx_path.exists() {
+                let content = fs::read_to_string(&ncx_path)?;
+                let mut updated_content = content.clone();
+                let mut changed = false;
+
+                let ncx_dir = ncx_path.parent().unwrap();
+
+                for (_id, old_href, new_href) in renames {
+                    let old_target = opf_dir.join(old_href);
+                    let new_target = opf_dir.join(new_href);
+
+                    if let Some(rel_old) = pathdiff::diff_paths(&old_target, ncx_dir) {
+                        if let Some(rel_new) = pathdiff::diff_paths(&new_target, ncx_dir) {
+                            let rel_old_str = rel_old.to_string_lossy().replace('\\', "/");
+                            let rel_new_str = rel_new.to_string_lossy().replace('\\', "/");
+
+                            if rel_old_str != rel_new_str && updated_content.contains(&rel_old_str) {
+                                updated_content =
+                                    updated_content.replace(&rel_old_str, &rel_new_str);
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+
+                if changed {
+                    fs::write(ncx_path, updated_content)?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Normaliza una ruta relativa resolviendo componentes `..` y `.` sin tocar el disco.
+///
+/// Ejemplo: `Text/../Images/pic.jpg` → `Images/pic.jpg`
+fn normalize_rel_path(path: &std::path::Path) -> String {
+    use std::path::Component;
+    use path_slash::PathExt as _;
+
+    let mut parts: Vec<&std::ffi::OsStr> = Vec::new();
+    for comp in path.components() {
+        match comp {
+            Component::ParentDir => { parts.pop(); }
+            Component::CurDir => {}
+            Component::Normal(s) => parts.push(s),
+            _ => {}
+        }
+    }
+    let normalized: std::path::PathBuf = parts.iter().collect();
+    normalized.to_slash_lossy().into_owned()
 }

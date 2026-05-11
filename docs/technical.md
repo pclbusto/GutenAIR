@@ -52,6 +52,10 @@ ProjectRoot/
 │   ├── Text/        (XHTML Documents)
 │   ├── Styles/      (CSS)
 │   ├── Images/      (Assets)
+│   ├── Fonts/       (Embedded Fonts)
+│   ├── Audio/       (Media Overlays)
+│   ├── Video/       (Rich Media)
+│   ├── Misc/        (Other resources)
 │   └── nav.xhtml    (Auto-generated TOC)
 └── mimetype
 ```

@@ -6,7 +6,7 @@
 
 use thiserror::Error;
 
-/// Tipos de error que puede producir la biblioteca `guten_core`
+/// Tipos de error que puede producir la biblioteca `gutencore`
 ///
 /// `GutenError` encapsula todos los posibles errores que pueden ocurrir
 /// durante las operaciones con archivos EPUB, incluyendo errores de sistema,
@@ -15,7 +15,8 @@ use thiserror::Error;
 /// # Ejemplo de manejo de errores
 ///
 /// ```no_run
-/// # use guten_core::error::{GutenError, Result};
+/// # use gutencore::GutenCore;
+/// # use gutencore::error::{GutenError, Result};
 /// # fn example() -> Result<()> {
 /// match GutenCore::open_folder("./ruta/invalida") {
 ///     Ok(core) => println!("Proyecto cargado: {:?}", core),
@@ -37,7 +38,7 @@ use thiserror::Error;
 /// tipos estándar usando `?`:
 ///
 /// ```no_run
-/// # use guten_core::error::Result;
+/// # use gutencore::error::Result;
 /// # use std::fs;
 /// fn leer_archivo() -> Result<String> {
 ///     let contenido = fs::read_to_string("archivo.txt")?;  // Io → GutenError::Io
@@ -57,10 +58,11 @@ pub enum GutenError {
     ///
     /// # Ejemplo
     /// ```no_run
-    /// # use guten_core::error::GutenError;
+    /// # use gutencore::error::GutenError;
     /// # use std::fs;
-    /// if let Err(GutenError::Io(e)) = fs::read_to_string("/ruta/inexistente") {
-    ///     println!("Error de IO: {}", e);
+    /// fn test() -> Result<(), GutenError> {
+    ///     let _ = fs::read_to_string("/ruta/inexistente")?;
+    ///     Ok(())
     /// }
     /// ```
     #[error("IO error: {0}")]
@@ -75,11 +77,19 @@ pub enum GutenError {
     ///
     /// # Ejemplo
     /// ```no_run
-    /// # use guten_core::error::GutenError;
-    /// # use quick_xml::Reader;
-    /// let xml_invalido = "<root><unclosed>";
-    /// if let Err(GutenError::Xml(e)) = quick_xml::se::from_str::<()>(xml_invalido) {
-    ///     println!("Error de XML: {}", e);
+    /// # use gutencore::error::GutenError;
+    /// fn test() -> Result<(), GutenError> {
+    ///     // quick_xml produces error when parsing invalid XML
+    ///     let xml_invalido = "<root><unclosed>";
+    ///     let mut reader = quick_xml::Reader::from_str(xml_invalido);
+    ///     loop {
+    ///         match reader.read_event() {
+    ///             Ok(quick_xml::events::Event::Eof) => break,
+    ///             Ok(_) => (),
+    ///             Err(e) => return Err(GutenError::Xml(e)),
+    ///         }
+    ///     }
+    ///     Ok(())
     /// }
     /// ```
     #[error("XML error: {0}")]
@@ -113,8 +123,8 @@ pub enum GutenError {
     ///
     /// # Ejemplo
     /// ```no_run
-    /// # use guten_core::error::{GutenError, Result};
-    /// # use guten_core::GutenCore;
+    /// # use gutencore::error::{GutenError, Result};
+    /// # use gutencore::GutenCore;
     /// match GutenCore::open_folder("./carpeta_sin_epub") {
     ///     Err(GutenError::InvalidProject(msg)) => {
     ///         assert_eq!(msg, "META-INF/container.xml not found");
@@ -135,7 +145,7 @@ pub enum GutenError {
     ///
     /// # Ejemplo
     /// ```no_run
-    /// # use guten_core::error::GutenError;
+    /// # use gutencore::error::GutenError;
     /// let error = GutenError::Manifest("Item 'chap1' references missing file".to_string());
     /// println!("{}", error); // "Manifest error: Item 'chap1' references missing file"
     /// ```
@@ -155,7 +165,7 @@ pub enum GutenError {
     ///
     /// # Ejemplo
     /// ```no_run
-    /// # use guten_core::error::GutenError;
+    /// # use gutencore::error::GutenError;
     /// let error = GutenError::Other("Unsupported EPUB version".to_string());
     /// println!("{}", error); // "Other error: Unsupported EPUB version"
     /// ```
@@ -163,7 +173,7 @@ pub enum GutenError {
     Other(String),
 }
 
-/// Resultado especializado para operaciones de `guten_core`
+/// Resultado especializado para operaciones de `gutencore`
 ///
 /// Es un alias de [`Result`](std::result::Result) donde el tipo de error
 /// siempre es [`GutenError`].
@@ -171,8 +181,8 @@ pub enum GutenError {
 /// # Ejemplo
 ///
 /// ```no_run
-/// # use guten_core::error::{Result, GutenError};
-/// # use guten_core::GutenCore;
+/// # use gutencore::error::{Result, GutenError};
+/// # use gutencore::GutenCore;
 /// fn abrir_epub(ruta: &str) -> Result<GutenCore> {
 ///     GutenCore::open_folder(ruta)  // Retorna Result<GutenCore, GutenError>
 /// }
@@ -181,8 +191,8 @@ pub enum GutenError {
 /// # Uso con `?`
 ///
 /// ```no_run
-/// # use guten_core::error::Result;
-/// # use guten_core::GutenCore;
+/// # use gutencore::error::Result;
+/// # use gutencore::GutenCore;
 /// fn ejemplo() -> Result<()> {
 ///     let core = GutenCore::open_folder("./mi_epub")?;  // Propaga GutenError automáticamente
 ///     Ok(())

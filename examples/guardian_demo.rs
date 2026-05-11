@@ -71,7 +71,8 @@ fn main() -> anyhow::Result<()> {
     core.set_style_as_default("extra_css")?;
     core.save()?;
 
-    let chap1_after = core.sanitize_to_xhtml(&std::fs::read_to_string(core.get_resource_path("chap1")?)?)?;
+    let chap1_content = std::fs::read_to_string(core.get_resource_path("chap1")?)?;
+    let chap1_after = core.sanitize_to_xhtml("chap1", &chap1_content)?;
     println!("  Sanitized Chap1 with custom CSS order:\n---");
     println!("{}", chap1_after);
     println!("---");

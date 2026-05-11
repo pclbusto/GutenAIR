@@ -50,8 +50,11 @@ impl GutenCore {
     ///     │   └── nav.xhtml
     ///     ├── Styles/
     ///     │   └── style.css
-    ///     └── Images/
-    ///         └── (imágenes)
+    ///     ├── Images/     (Assets)
+    ///     ├── Fonts/
+    ///     ├── Audio/
+    ///     ├── Video/
+    ///     └── Misc/
     /// ```
     ///
     /// # Reglas de compresión
@@ -88,7 +91,7 @@ impl GutenCore {
     /// # Ejemplo básico
     ///
     /// ```no_run
-    /// # use guten_core::GutenCore;
+    /// # use gutencore::GutenCore;
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// // Abrir un proyecto existente
     /// let mut core = GutenCore::open_folder("./mi_proyecto_epub")?;
@@ -103,7 +106,7 @@ impl GutenCore {
     /// # Ejemplo con proyecto nuevo
     ///
     /// ```no_run
-    /// # use guten_core::GutenCore;
+    /// # use gutencore::GutenCore;
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// // Crear un proyecto nuevo
     /// let mut core = GutenCore::new_project("./nuevo_libro", "Mi Novela", "es")?;
@@ -122,8 +125,8 @@ impl GutenCore {
     /// # Ejemplo con manejo de errores
     ///
     /// ```no_run
-    /// # use guten_core::GutenCore;
-    /// # use guten_core::error::GutenError;
+    /// # use gutencore::GutenCore;
+    /// # use gutencore::error::GutenError;
     /// let mut core = GutenCore::open_folder("./proyecto_invalido")?;
     ///
     /// match core.export_epub("./salida.epub") {
@@ -211,7 +214,9 @@ impl GutenCore {
                 let name = path.strip_prefix(&self.workdir).unwrap();
                 let name_str = name.to_slash_lossy();
 
-                if name_str == "mimetype" {
+                if name_str == "mimetype"
+                    || name_str.starts_with(crate::index::IndexDb::FILE_NAME)
+                {
                     continue;
                 }
 

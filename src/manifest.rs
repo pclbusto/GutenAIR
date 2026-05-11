@@ -20,7 +20,7 @@ impl GutenCore {
     ///
     /// # Ejemplo
     /// ```no_run
-    /// # use guten_core::GutenCore;
+    /// # use gutencore::GutenCore;
     /// let core = GutenCore::open_folder("./mi_epub")?;
     /// let spine = core.get_spine();
     /// for (i, id) in spine.iter().enumerate() {
@@ -42,9 +42,9 @@ impl GutenCore {
     ///
     /// # Ejemplo
     /// ```no_run
-    /// # use guten_core::GutenCore;
+    /// # use gutencore::GutenCore;
     /// let mut core = GutenCore::open_folder("./mi_epub")?;
-    /// let new_order = vec!["id_portada", "id_cap1", "id_cap2", "id_indice"];
+    /// let new_order = vec!["id_portada".to_string(), "id_cap1".to_string(), "id_cap2".to_string(), "id_indice".to_string()];
     /// core.set_spine(new_order);
     /// # Ok::<_, Box<dyn std::error::Error>>(())
     /// ```
@@ -63,7 +63,7 @@ impl GutenCore {
     ///
     /// # Ejemplo
     /// ```no_run
-    /// # use guten_core::GutenCore;
+    /// # use gutencore::GutenCore;
     /// let mut core = GutenCore::open_folder("./mi_epub")?;
     /// // Insertar al principio
     /// core.spine_insert("cover".to_string(), Some(0));
@@ -94,7 +94,7 @@ impl GutenCore {
     ///
     /// # Ejemplo
     /// ```no_run
-    /// # use guten_core::GutenCore;
+    /// # use gutencore::GutenCore;
     /// let mut core = GutenCore::open_folder("./mi_epub")?;
     /// // Mover el capítulo 3 al principio
     /// core.spine_move("chap3", 0)?;
@@ -121,7 +121,7 @@ impl GutenCore {
     ///
     /// # Ejemplo
     /// ```no_run
-    /// # use guten_core::GutenCore;
+    /// # use gutencore::GutenCore;
     /// let mut core = GutenCore::open_folder("./mi_epub")?;
     /// core.spine_remove("appendix");
     /// # Ok::<_, Box<dyn std::error::Error>>(())
@@ -149,7 +149,7 @@ impl GutenCore {
     ///
     /// # Ejemplo
     /// ```no_run
-    /// # use guten_core::GutenCore;
+    /// # use gutencore::GutenCore;
     /// let mut core = GutenCore::open_folder("./mi_epub")?;
     /// core.add_to_manifest("new_chapter".to_string(), "Text/new.xhtml".to_string(), "application/xhtml+xml".to_string(), "".to_string());
     /// # Ok::<_, Box<dyn std::error::Error>>(())  
@@ -188,7 +188,7 @@ impl GutenCore {
     ///
     /// # Ejemplo
     /// ```no_run
-    /// # use guten_core::GutenCore;
+    /// # use gutencore::GutenCore;
     /// let mut core = GutenCore::open_folder("./mi_epub")?;
     /// core.remove_from_manifest("new_chapter");
     /// # Ok::<_, Box<dyn std::error::Error>>(())  
@@ -211,13 +211,17 @@ impl GutenCore {
     ///
     /// # Ejemplo
     /// ```no_run
-    /// # use guten_core::GutenCore;
+    /// # use gutencore::GutenCore;
     /// let mut core = GutenCore::open_folder("./mi_epub")?;
     /// core.delete_item("new_chapter");
     /// # Ok::<_, Box<dyn std::error::Error>>(())  
     /// ```
     pub fn delete_item(&mut self, id: &str) -> Result<()> {
         let path = self.get_resource_path(id)?;
+
+        if let Some(db) = &self.index_db {
+            let _ = db.clear_chapter(id);
+        }
 
         self.remove_from_manifest(id)?;
 
@@ -240,7 +244,7 @@ impl GutenCore {
     ///
     /// # Ejemplo
     /// ```no_run
-    /// # use guten_core::GutenCore;
+    /// # use gutencore::GutenCore;
     /// let core = GutenCore::open_folder("./mi_epub")?;
     /// // Buscar por ID
     /// let item = core.get_item("chap1")?;
@@ -269,7 +273,7 @@ impl GutenCore {
     ///
     /// # Ejemplo
     /// ```no_run
-    /// # use guten_core::GutenCore;
+    /// # use gutencore::GutenCore;
     /// let core = GutenCore::open_folder("./mi_epub")?;
     /// let path = core.get_resource_path("chap1")?;
     /// println!("El archivo está en: {}", path.display());
@@ -292,7 +296,7 @@ impl GutenCore {
     ///
     /// # Ejemplo
     /// ```no_run
-    /// # use guten_core::GutenCore;
+    /// # use gutencore::GutenCore;
     /// let core = GutenCore::open_folder("./mi_epub")?;
     /// let errores = core.validate_integrity();
     /// if !errores.is_empty() {
@@ -329,9 +333,9 @@ impl GutenCore {
     ///
     /// # Ejemplo
     /// ```no_run
-    /// # use guten_core::GutenCore;
+    /// # use gutencore::GutenCore;
     /// let mut core = GutenCore::open_folder("./mi_epub")?;
-    /// core.rename_item("chap1", "Text/chapter_one.xhtml")?;
+    /// core.rename_item("chap1", "Text/chapter_one.xhtml".to_string())?;
     /// # Ok::<_, Box<dyn std::error::Error>>(())
     /// ```
     pub fn rename_item(&mut self, id: &str, new_href: String) -> Result<()> {
@@ -381,10 +385,10 @@ impl GutenCore {
     ///
     /// # Ejemplo
     /// ```rust
-    /// # use guten_core::GutenCore;
+    /// # use gutencore::GutenCore;
     /// let core = GutenCore::new("./proyecto");
     /// let sanitized = core.sanitize_filename("Mi: Capítulo/1!");
-    /// assert_eq!(sanitized, "Mi_Captulo1");
+    /// assert_eq!(sanitized, "MiCapítulo1");
     /// ```
     pub fn sanitize_filename(&self, name: &str) -> String {
         name.chars()
@@ -410,7 +414,7 @@ impl GutenCore {
     ///
     /// # Ejemplo
     /// ```no_run
-    /// # use guten_core::GutenCore;
+    /// # use gutencore::GutenCore;
     /// let mut core = GutenCore::open_folder("./mi_epub")?;
     /// let css = "body { font-family: serif; }".as_bytes();
     /// core.add_resource("custom_css".to_string(), css, "text/css", "Styles/custom.css")?;
@@ -459,7 +463,7 @@ impl GutenCore {
     ///
     /// # Ejemplo
     /// ```no_run
-    /// # use guten_core::GutenCore;
+    /// # use gutencore::GutenCore;
     /// let mut core = GutenCore::open_folder("./mi_epub")?;
     /// core.import_file("./logo.png", "logo".to_string(), "Images/logo.png", "image/png")?;
     /// # Ok::<_, Box<dyn std::error::Error>>(())
@@ -490,7 +494,7 @@ impl GutenCore {
     ///
     /// # Ejemplo
     /// ```no_run
-    /// # use guten_core::GutenCore;
+    /// # use gutencore::GutenCore;
     /// let core = GutenCore::open_folder("./mi_epub")?;
     /// let rel_path = core.get_relative_path("chap1", "chap2")?;
     /// // Si chap1 está en Text/ y chap2 en Text/, resultado: "chap2.xhtml"
@@ -528,7 +532,7 @@ impl GutenCore {
     ///
     /// # Ejemplo
     /// ```no_run
-    /// # use guten_core::GutenCore;
+    /// # use gutencore::GutenCore;
     /// let core = GutenCore::open_folder("./mi_epub")?;
     /// let (manifest_errors, orphans) = core.validate_integrity_deep();
     ///
@@ -589,7 +593,7 @@ impl GutenCore {
     ///
     /// # Ejemplo
     /// ```no_run
-    /// # use guten_core::GutenCore;
+    /// # use gutencore::GutenCore;
     /// let mut core = GutenCore::open_folder("./mi_epub")?;
     ///
     /// let contenido = r#"
@@ -631,7 +635,13 @@ impl GutenCore {
         if let Some(parent) = full_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(&full_path, clean_xhtml)?;
+        std::fs::write(&full_path, &clean_xhtml)?;
+
+        if let Some(db) = &self.index_db {
+            if db.index_xhtml(id, &clean_xhtml).is_err() {
+                self.index_dirty = true;
+            }
+        }
 
         self.add_to_manifest(
             id.to_string(),
@@ -658,7 +668,7 @@ impl GutenCore {
     ///
     /// # Ejemplo
     /// ```no_run
-    /// # use guten_core::GutenCore;
+    /// # use gutencore::GutenCore;
     /// let mut core = GutenCore::open_folder("./mi_epub")?;
     ///
     /// let css = "body { background: #f0f0f0; }";
@@ -701,11 +711,103 @@ impl GutenCore {
             "".to_string(),
         )
     }
+
+    /// Establece la carátula del libro a partir de una imagen externa.
+    ///
+    /// Este método realiza las siguientes acciones:
+    /// 1. Importa la imagen al directorio `OEBPS/Images/` con el nombre `cover.[ext]`.
+    /// 2. Si ya existía una imagen de portada con otra extensión, elimina la anterior.
+    /// 3. Crea o actualiza un documento XHTML `OEBPS/Text/cover.xhtml`.
+    /// 4. Asegura que el documento de portada sea el primero en el orden de lectura (`spine`).
+    /// 5. Marca los recursos con las propiedades EPUB 3 necesarias (`cover-image` y `cover`).
+    ///
+    /// # Argumentos
+    /// * `source_image_path` - Ruta local a la imagen que se usará como portada.
+    ///
+    /// # Errores
+    /// * `GutenError::Io` - Si la imagen no existe o no se puede leer.
+    /// * `GutenError::Manifest` - Si hay errores al manipular el manifiesto.
+    ///
+    /// # Ejemplo
+    /// ```no_run
+    /// # use gutencore::GutenCore;
+    /// let mut core = GutenCore::open_folder("./mi_proyecto")?;
+    /// core.set_cover("./portada_final.jpg")?;
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn set_cover(&mut self, source_image_path: impl AsRef<Path>) -> Result<()> {
+        let src_path = source_image_path.as_ref();
+        if !src_path.exists() {
+            return Err(GutenError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("Cover image not found: {}", src_path.display()),
+            )));
+        }
+
+        let extension = src_path
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("jpg")
+            .to_lowercase();
+
+        let mime_type = match extension.as_str() {
+            "jpg" | "jpeg" => "image/jpeg",
+            "png" => "image/png",
+            "gif" => "image/gif",
+            "svg" => "image/svg+xml",
+            "webp" => "image/webp",
+            _ => "image/jpeg", // fallback razonable
+        };
+
+        let img_id = "cover-image";
+        let img_href = format!("Images/cover.{}", extension);
+
+        // 1. Manejar la imagen vieja si existe (borrar archivo físico para evitar basura)
+        if self.manifest.contains_key(img_id) {
+            self.delete_item(img_id)?;
+        }
+
+        // 2. Importar la nueva imagen
+        let bytes = fs::read(src_path)?;
+        self.add_resource(img_id.to_string(), &bytes, mime_type, &img_href)?;
+
+        // 3. Marcar como cover-image en el manifiesto (Requisito EPUB 3)
+        if let Some(item) = self.manifest.get_mut(img_id) {
+            item.properties = "cover-image".to_string();
+        }
+
+        // 4. Crear el XHTML de la portada
+        // Usamos una ruta relativa a Text/ que es "../Images/cover.ext"
+        let xhtml_content = format!(
+            r#"<div style="text-align: center; padding: 0; margin: 0;">
+  <img src="../{}" alt="Cover" style="max-width: 100%; height: auto;" />
+</div>"#,
+            img_href
+        );
+
+        let doc_id = "cover";
+        if self.manifest.contains_key(doc_id) {
+            // Si ya existe, lo actualizamos (esto lo pasará por sanitize_to_xhtml)
+            self.save_chapter(doc_id, &xhtml_content)?;
+        } else {
+            // Si no existe, lo creamos
+            self.add_document(doc_id, &xhtml_content)?;
+            // Y lo ponemos al principio del spine
+            self.spine_insert(doc_id.to_string(), Some(0));
+            // Marcar el XHTML con propiedad cover
+            if let Some(item) = self.manifest.get_mut(doc_id) {
+                item.properties = "cover".to_string();
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use tempfile::tempdir;
 
     #[test]
@@ -726,6 +828,177 @@ mod tests {
         assert!(!core.manifest.contains_key("chap1"));
         assert!(!chap1_path.exists());
         assert!(!core.spine.contains(&"chap1".to_string()));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_new_project_folders() -> Result<()> {
+        let dir = tempdir()?;
+        let project_path = dir.path().join("my_book");
+        GutenCore::new_project(&project_path, "Test Book", "en")?;
+
+        let folders = vec![
+            "OEBPS/Text",
+            "OEBPS/Styles",
+            "OEBPS/Images",
+            "OEBPS/Fonts",
+            "OEBPS/Audio",
+            "OEBPS/Video",
+            "OEBPS/Misc",
+            "META-INF",
+        ];
+
+        for folder in folders {
+            let path = project_path.join(folder);
+            assert!(path.exists(), "Folder {} should exist", folder);
+            assert!(path.is_dir(), "Path {} should be a directory", folder);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_set_cover() -> Result<()> {
+        let dir = tempdir()?;
+        let mut core = GutenCore::new_project(dir.path(), "Cover Test", "es")?;
+
+        // Crear una imagen falsa
+        let img_path = dir.path().join("test_cover.jpg");
+        fs::write(&img_path, b"fake image data")?;
+
+        // Establecer portada
+        core.set_cover(&img_path)?;
+
+        // Verificar manifiesto
+        assert!(core.manifest.contains_key("cover-image"));
+        assert!(core.manifest.contains_key("cover"));
+
+        // Verificar propiedades
+        assert_eq!(
+            core.manifest.get("cover-image").unwrap().properties,
+            "cover-image"
+        );
+        assert_eq!(core.manifest.get("cover").unwrap().properties, "cover");
+
+        // Verificar spine (debe ser el primero)
+        assert_eq!(core.spine[0], "cover");
+
+        // Verificar contenido del archivo
+        let cover_path = core.get_resource_path("cover")?;
+        let content = fs::read_to_string(&cover_path)?;
+        assert!(content.contains("Images/cover.jpg"));
+
+        // Probar cambio de imagen con otra extensión
+        let png_path = dir.path().join("other.png");
+        fs::write(&png_path, b"fake png data")?;
+        core.set_cover(&png_path)?;
+
+        assert!(core.manifest.get("cover-image").unwrap().href.ends_with(".png"));
+        let content2 = fs::read_to_string(&cover_path)?;
+        assert!(content2.contains("Images/cover.png"));
+        assert!(!content2.contains("Images/cover.jpg"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_index_no_ghost_after_delete() -> Result<()> {
+        let dir = tempdir()?;
+        let mut core = GutenCore::new_project(dir.path(), "Ghost Test", "en")?;
+
+        core.add_document("extra", "<h1>Extra</h1><p id=\"p1\">Unique word: hyoga</p>")?;
+
+        let hits = core.search("hyoga")?;
+        assert!(!hits.is_empty(), "should find 'hyoga' before delete");
+
+        core.delete_item("extra")?;
+        core.build_index()?;
+
+        let hits = core.search("hyoga")?;
+        assert!(hits.is_empty(), "ghost entry: 'hyoga' still found after chapter deleted");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_validate_links_local_scoped_to_chapter() -> Result<()> {
+        let dir = tempdir()?;
+        let mut core = GutenCore::new_project(dir.path(), "Link Test", "en")?;
+
+        // sect tiene el hook "sect-a"
+        core.add_document(
+            "sect",
+            r#"<h1 id="sect-a">Section A</h1><p>Content</p>"#,
+        )?;
+        // linker tiene un link a #sect-a que NO existe en linker (solo existe en sect)
+        core.add_document(
+            "linker",
+            r##"<p>Ver <a href="#sect-a">sección</a></p>"##,
+        )?;
+
+        let orphans = core.validate_links()?;
+        assert!(
+            orphans.iter().any(|(ch, href)| ch == "linker" && href == "#sect-a"),
+            "expected #sect-a in 'linker' to be orphan; got: {:?}",
+            orphans
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_validate_links_cross_file() -> Result<()> {
+        let dir = tempdir()?;
+        let mut core = GutenCore::new_project(dir.path(), "CrossLink Test", "en")?;
+
+        core.add_document("target", r#"<h1 id="real-hook">Title</h1><p>Content</p>"#)?;
+        // source tiene un link válido y uno roto al mismo archivo
+        core.add_document(
+            "source",
+            r#"<p>
+                <a href="target.xhtml#real-hook">ok</a>
+                <a href="target.xhtml#ghost-hook">broken</a>
+            </p>"#,
+        )?;
+
+        let orphans = core.validate_links()?;
+
+        assert!(
+            !orphans.iter().any(|(_, href)| href == "target.xhtml#real-hook"),
+            "valid cross-file link should not be orphan"
+        );
+        assert!(
+            orphans.iter().any(|(ch, href)| ch == "source" && href == "target.xhtml#ghost-hook"),
+            "broken cross-file link should be reported; got: {:?}",
+            orphans
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_export_excludes_wal_sidecars() -> Result<()> {
+        let dir = tempdir()?;
+        let mut core = GutenCore::new_project(dir.path(), "WAL Test", "en")?;
+
+        // Crear sidecars WAL artificialmente
+        fs::write(dir.path().join(".gutenair.db-wal"), b"fake wal")?;
+        fs::write(dir.path().join(".gutenair.db-shm"), b"fake shm")?;
+
+        let out = dir.path().join("out.epub");
+        core.export_epub(&out)?;
+
+        let file = fs::File::open(&out)?;
+        let mut zip = zip::ZipArchive::new(file).unwrap();
+        for i in 0..zip.len() {
+            let name = zip.by_index(i).unwrap().name().to_string();
+            assert!(
+                !name.starts_with(".gutenair.db"),
+                "EPUB contains DB sidecar: {}",
+                name
+            );
+        }
 
         Ok(())
     }

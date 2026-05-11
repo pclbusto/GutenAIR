@@ -33,7 +33,7 @@ impl GutenCore {
     /// # Ejemplo
     ///
     /// ```no_run
-    /// # use guten_core::GutenCore;
+    /// # use gutencore::GutenCore;
     /// let core = GutenCore::new("./proyecto");
     ///
     /// let html_peligroso = r#"
@@ -101,7 +101,7 @@ impl GutenCore {
     /// # Ejemplo básico
     ///
     /// ```no_run
-    /// # use guten_core::GutenCore;
+    /// # use gutencore::GutenCore;
     /// let core = GutenCore::new("./proyecto");
     ///
     /// let texto = "Este es el primer párrafo.\nTiene dos líneas.\n\nEste es el segundo párrafo.";
@@ -123,7 +123,7 @@ impl GutenCore {
     /// # Ejemplo con formato complejo
     ///
     /// ```no_run
-    /// # use guten_core::GutenCore;
+    /// # use gutencore::GutenCore;
     /// let core = GutenCore::new("./proyecto");
     ///
     /// let poema = r#"Roses are red,
@@ -142,7 +142,7 @@ impl GutenCore {
     /// # Ejemplo de integración con EPUB
     ///
     /// ```no_run
-    /// # use guten_core::GutenCore;
+    /// # use gutencore::GutenCore;
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let mut core = GutenCore::new_project("./mi_libro", "Mi Libro", "es")?;
     ///
@@ -156,6 +156,7 @@ impl GutenCore {
     /// std::fs::write(ruta_capitulo, xhtml)?;
     ///
     /// // Agregar al manifiesto y spine
+    /// # use gutencore::ManifestItem;
     /// core.manifest.insert("cap1".to_string(), ManifestItem {
     ///     id: "cap1".to_string(),
     ///     href: "Text/capitulo1.xhtml".to_string(),
@@ -194,7 +195,7 @@ impl GutenCore {
     /// de fuentes no confiables, **debes llamar a `clean_html` primero**:
     ///
     /// ```no_run
-    /// # use guten_core::GutenCore;
+    /// # use gutencore::GutenCore;
     /// let core = GutenCore::new("./proyecto");
     /// let texto_peligroso = "Texto <script>alert('xss')</script> normal";
     /// let sanitizado = core.clean_html(texto_peligroso);
@@ -211,7 +212,7 @@ impl GutenCore {
             .split("\n\n")
             .map(|p| format!("<p>{}</p>", p.trim().replace("\n", "<br/>")))
             .collect();
-        
+
         format!(r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml">
@@ -220,5 +221,281 @@ impl GutenCore {
 {}
 </body>
 </html>"#, title, paragraphs.join("\n"))
+    }
+
+    /// Extrae texto plano de HTML o XHTML.
+    ///
+    /// - Elimina todas las etiquetas.
+    /// - Decodifica entidades HTML (`&amp;` → `&`, `&#160;` → espacio, etc.).
+    /// - Convierte bloques (`<p>`, headings, `<div>`, …) en párrafos separados por `\n\n`.
+    /// - Convierte `<br>` en `\n`.
+    /// - Convierte `<li>` en `- item\n`.
+    /// - Ignora el contenido de `<script>`, `<style>` y `<head>`.
+    /// - Normaliza espacios múltiples en la misma línea.
+    /// - Colapsa más de una línea en blanco consecutiva.
+    ///
+    /// Si el input no es XML/XHTML válido aplica un strip de etiquetas de emergencia
+    /// carácter a carácter (sin regex).
+    ///
+    /// # Ejemplo
+    ///
+    /// ```rust
+    /// # use gutencore::GutenCore;
+    /// let html = r#"<p>Hola <strong>mundo</strong>.</p>
+    /// <p>Segundo&#160;párrafo<br/>otra línea.</p>"#;
+    /// let text = GutenCore::extract_text(html);
+    /// assert!(text.contains("Hola mundo."));
+    /// assert!(text.contains("Segundo"));
+    /// ```
+    pub fn extract_text(html: &str) -> String {
+        extract_text_impl(html)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Private helpers
+// ---------------------------------------------------------------------------
+
+const BLOCK_TAGS: &[&str] = &[
+    "p", "h1", "h2", "h3", "h4", "h5", "h6",
+    "div", "blockquote", "section", "article",
+    "figure", "figcaption", "pre",
+    "ul", "ol", "dl", "dt", "dd",
+    "table", "thead", "tbody", "tr",
+    "address", "aside", "footer", "header", "main", "nav",
+];
+
+const SKIP_TAGS: &[&str] = &["script", "style", "head"];
+
+fn extract_text_impl(html: &str) -> String {
+    // 1. Try parsing as-is (full XHTML document)
+    if let Ok(doc) = roxmltree::Document::parse(html) {
+        return extract_from_xml_doc(&doc);
+    }
+    // 2. Wrap in <div> and retry (HTML fragment with multiple roots)
+    let wrapped = format!("<div>{}</div>", html);
+    if let Ok(doc) = roxmltree::Document::parse(&wrapped) {
+        return extract_from_xml_doc(&doc);
+    }
+    // 3. Fallback: strip tags character-by-character (broken HTML syntax)
+    let stripped = strip_tags_naive(html);
+    normalize_text(&stripped)
+}
+
+fn extract_from_xml_doc(doc: &roxmltree::Document) -> String {
+    let mut buf = String::new();
+    let start = doc
+        .descendants()
+        .find(|n| n.is_element() && n.tag_name().name() == "body")
+        .unwrap_or_else(|| doc.root_element());
+    for child in start.children() {
+        walk_extract(&child, &mut buf);
+    }
+    normalize_text(&buf)
+}
+
+fn walk_extract(node: &roxmltree::Node, buf: &mut String) {
+    if node.is_text() {
+        if let Some(t) = node.text() {
+            buf.push_str(t);
+        }
+        return;
+    }
+    if !node.is_element() {
+        return;
+    }
+
+    let tag = node.tag_name().name();
+
+    if SKIP_TAGS.contains(&tag) {
+        return;
+    }
+
+    if tag == "br" {
+        buf.push('\n');
+        return;
+    }
+
+    let is_block = BLOCK_TAGS.contains(&tag);
+    if is_block && !buf.is_empty() {
+        ensure_paragraph_break(buf);
+    }
+
+    if tag == "li" {
+        ensure_newline(buf);
+        buf.push_str("- ");
+    }
+
+    for child in node.children() {
+        walk_extract(&child, buf);
+    }
+
+    if is_block {
+        ensure_paragraph_break(buf);
+    }
+}
+
+/// Asegura que `buf` termine en `\n\n` sin duplicar separadores.
+fn ensure_paragraph_break(buf: &mut String) {
+    if buf.ends_with("\n\n") {
+        // already ok
+    } else if buf.ends_with('\n') {
+        buf.push('\n');
+    } else {
+        buf.push_str("\n\n");
+    }
+}
+
+/// Asegura que `buf` termine en al menos un `\n`.
+fn ensure_newline(buf: &mut String) {
+    if !buf.ends_with('\n') {
+        buf.push('\n');
+    }
+}
+
+fn normalize_text(text: &str) -> String {
+    // 1. Non-breaking spaces → regular space
+    let text = text.replace('\u{00A0}', " ");
+
+    // 2. Normalize each line: collapse tabs/spaces, trim trailing space
+    let lines: Vec<String> = text
+        .split('\n')
+        .map(|line| {
+            let mut out = String::new();
+            let mut prev_space = false;
+            for c in line.chars() {
+                if c == ' ' || c == '\t' {
+                    if !prev_space && !out.is_empty() {
+                        out.push(' ');
+                    }
+                    prev_space = true;
+                } else {
+                    out.push(c);
+                    prev_space = false;
+                }
+            }
+            out.trim_end().to_string()
+        })
+        .collect();
+
+    // 3. Collapse consecutive blank lines to at most one
+    let mut result = String::new();
+    let mut blank_run = 0usize;
+    for line in &lines {
+        if line.is_empty() {
+            blank_run += 1;
+            if blank_run == 1 {
+                result.push('\n');
+            }
+        } else {
+            blank_run = 0;
+            result.push_str(line);
+            result.push('\n');
+        }
+    }
+
+    result.trim().to_string()
+}
+
+/// Strip de emergencia carácter a carácter sin regex. Decodifica las entidades
+/// HTML más comunes para que el texto sea legible aunque el XML no sea válido.
+fn strip_tags_naive(html: &str) -> String {
+    let mut result = String::new();
+    let mut in_tag = false;
+    for c in html.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => result.push(c),
+            _ => {}
+        }
+    }
+    // Decode common entities in the stripped text
+    result
+        .replace("&nbsp;", " ")
+        .replace("&#160;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::GutenCore;
+
+    #[test]
+    fn test_extract_text_paragraphs() {
+        let html = r#"<p>Hola <strong>mundo</strong>.</p>
+<p>Segundo&#160;párrafo<br/>otra línea.</p>"#;
+        let text = GutenCore::extract_text(html);
+        assert!(text.contains("Hola mundo."), "inline tags stripped: {text}");
+        assert!(text.contains("Segundo párrafo"), "nbsp decoded: {text}");
+        assert!(text.contains("otra línea"), "br converted: {text}");
+        // paragraphs separated by blank line
+        assert!(text.contains(".\n\n"), "paragraph break present: {text}");
+    }
+
+    #[test]
+    fn test_extract_text_headings() {
+        let html = "<h1>Título</h1><p>Contenido del capítulo.</p>";
+        let text = GutenCore::extract_text(html);
+        assert!(text.contains("Título"), "h1 text preserved");
+        assert!(text.contains("Contenido"), "p text preserved");
+    }
+
+    #[test]
+    fn test_extract_text_skips_script_and_style() {
+        let html = r#"<p>Visible.</p>
+<script>alert('xss');</script>
+<style>.x { color: red; }</style>"#;
+        let text = GutenCore::extract_text(html);
+        assert!(text.contains("Visible"), "regular text kept");
+        assert!(!text.contains("alert"), "script content removed");
+        assert!(!text.contains("color"), "style content removed");
+    }
+
+    #[test]
+    fn test_extract_text_list_items() {
+        let html = "<ul><li>Primero</li><li>Segundo</li><li>Tercero</li></ul>";
+        let text = GutenCore::extract_text(html);
+        assert!(text.contains("- Primero"), "li bullet: {text}");
+        assert!(text.contains("- Segundo"), "li bullet: {text}");
+    }
+
+    #[test]
+    fn test_extract_text_collapses_whitespace() {
+        let html = "<p>Texto  con    espacios   extras.</p>";
+        let text = GutenCore::extract_text(html);
+        assert!(!text.contains("  "), "multiple spaces collapsed: {text}");
+    }
+
+    #[test]
+    fn test_extract_text_fallback_on_broken_html() {
+        // Not valid XML — should still return readable text
+        let html = "<p>Texto sin cerrar<br>siguiente línea</p>";
+        let text = GutenCore::extract_text(html);
+        assert!(text.contains("Texto"), "fallback should recover text: {text}");
+    }
+
+    #[test]
+    fn test_extract_text_full_xhtml_document() {
+        let xhtml = r#"<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="es">
+<head><title>Test</title><style>.x{}</style></head>
+<body>
+<h1>Capítulo 1</h1>
+<p>Primer párrafo con <em>énfasis</em>.</p>
+<p>Segundo párrafo.</p>
+</body>
+</html>"#;
+        let text = GutenCore::extract_text(xhtml);
+        assert!(text.contains("Capítulo 1"), "heading present");
+        assert!(text.contains("Primer párrafo con énfasis"), "inline stripped");
+        assert!(text.contains("Segundo párrafo"), "second p present");
+        assert!(!text.contains("style"), "head/style excluded");
+        assert!(!text.contains("<"), "no HTML tags in output");
     }
 }

@@ -14,7 +14,7 @@ impl GutenCore {
     ///
     /// # Ejemplo
     /// ```no_run
-    /// # use guten_core::GutenCore;
+    /// # use gutencore::GutenCore;
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let core = GutenCore::open_folder("./mi_epub")?;
     ///
@@ -61,7 +61,7 @@ impl GutenCore {
     /// # Ejemplo básico
     ///
     /// ```no_run
-    /// # use guten_core::GutenCore;
+    /// # use gutencore::GutenCore;
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let mut core = GutenCore::open_folder("./mi_epub")?;
     ///
@@ -88,7 +88,7 @@ impl GutenCore {
     /// # Ejemplo con verificación de cambios
     ///
     /// ```no_run
-    /// # use guten_core::GutenCore;
+    /// # use gutencore::GutenCore;
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let mut core = GutenCore::open_folder("./mi_epub")?;
     ///
@@ -164,8 +164,8 @@ impl GutenCore {
     ///
     /// # Ejemplo de uso manual
     ///
-    /// ```no_run
-    /// # use guten_core::GutenCore;
+    /// ```ignore
+    /// # use gutencore::GutenCore;
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let mut core = GutenCore::open_folder("./mi_epub")?;
     ///

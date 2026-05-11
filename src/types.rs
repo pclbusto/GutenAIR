@@ -47,6 +47,27 @@ pub enum ResourceKind {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StyleEntry {
+    pub clase: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub descripcion: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tag_sugerido: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StyleGroup {
+    pub bloque: Vec<StyleEntry>,
+    pub linea: Vec<StyleEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StyleCatalog {
+    pub archivo_origen: String,
+    pub estilos: StyleGroup,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GutenConfig {
     /// Estilos aplicados por defecto a todos los capítulos si no hay excepción
     pub default_styles: Vec<String>,
