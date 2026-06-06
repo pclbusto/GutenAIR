@@ -1,6 +1,6 @@
 use crate::core::GutenCore;
 use crate::error::{GutenError, Result};
-use crate::types::ManifestItem;
+use crate::types::{EpubHealthReport, ManifestItem};
 use path_slash::{PathBufExt, PathExt};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -132,9 +132,48 @@ impl GutenCore {
         }
     }
 
+    /// Devuelve `true` si el EPUB tiene una imagen de portada registrada.
+    ///
+    /// Soporta tanto EPUB 3 (`properties="cover-image"` en el manifiesto)
+    /// como EPUB 2 (`<meta name="cover" content="id"/>` en el OPF).
+    pub fn has_cover(&self) -> bool {
+        // EPUB 3 convention
+        if self
+            .manifest
+            .values()
+            .any(|it| it.properties == "cover-image")
+        {
+            return true;
+        }
+        // EPUB 2 convention
+        if let Some(ref cover_id) = self.cover_image_id {
+            return self.manifest.contains_key(cover_id);
+        }
+        false
+    }
+
+    /// Devuelve el `ManifestItem` de la imagen de portada, si existe.
+    ///
+    /// Soporta tanto EPUB 3 como EPUB 2.
+    pub fn get_cover_image(&self) -> Option<&ManifestItem> {
+        // EPUB 3 convention
+        if let Some(item) = self
+            .manifest
+            .values()
+            .find(|it| it.properties == "cover-image")
+        {
+            return Some(item);
+        }
+        // EPUB 2 convention
+        if let Some(ref cover_id) = self.cover_image_id {
+            return self.manifest.get(cover_id);
+        }
+        None
+    }
+
     // -------------------------
-    // Manifest Operations
-    // -------------------------
+// Manifest Operations
+// -------------------------
 
     /// Agrega un nuevo recurso al manifiesto
     ///
@@ -228,6 +267,45 @@ impl GutenCore {
         if path.exists() {
             fs::remove_file(path)?;
         }
+
+        Ok(())
+    }
+
+    /// Elimina varios recursos y persiste el OPF antes de borrar los archivos físicos.
+    ///
+    /// A diferencia de [`delete_item`](Self::delete_item), este método encapsula el ciclo
+    /// completo pensado para UIs: primero valida las rutas, luego quita los items del
+    /// manifiesto/spine en memoria, guarda el OPF actualizado y recién después elimina
+    /// los archivos del disco. Así se evita dejar el OPF apuntando a archivos ya borrados
+    /// si el guardado falla.
+    pub fn delete_items_and_save<I, S>(&mut self, ids: I) -> Result<()>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let ids: Vec<String> = ids.into_iter().map(|id| id.as_ref().to_string()).collect();
+        let mut paths = Vec::new();
+
+        for id in &ids {
+            paths.push((id.clone(), self.get_resource_path(id)?));
+        }
+
+        for (id, _) in &paths {
+            if let Some(db) = &self.index_db {
+                let _ = db.clear_chapter(id);
+            }
+            self.remove_from_manifest(id)?;
+        }
+
+        self.save()?;
+
+        for (_, path) in &paths {
+            if path.exists() {
+                fs::remove_file(path)?;
+            }
+        }
+
+        self.build_index()?;
 
         Ok(())
     }
@@ -574,6 +652,74 @@ impl GutenCore {
         (manifest_errors, orphans)
     }
 
+    /// Validación completa de salud estructural del EPUB.
+    ///
+    /// Combina y extiende las validaciones existentes en un solo reporte:
+    /// - `broken_links`: enlaces internos que apuntan a destinos inexistentes
+    /// - `orphan_anchors`: anclajes (`id`) que no son referenciados por ningún enlace
+    /// - `missing_manifest_entries`: items en el manifiesto cuyos archivos no existen en disco
+    /// - `opf_well_formed`: true si el OPF pudo ser parseado correctamente
+    pub fn validate(&self) -> Result<EpubHealthReport> {
+        let opf_well_formed = self.metadata.is_some() && self.opf_path.is_some();
+
+        let missing_manifest_entries = self
+            .validate_integrity()
+            .into_iter()
+            .map(|e| {
+                if let Some(stripped) = e.strip_prefix("Archivo faltante: ") {
+                    stripped.to_string()
+                } else {
+                    e
+                }
+            })
+            .collect();
+
+        let broken_links = self.validate_links().unwrap_or_default();
+
+        // Find orphan anchors: hooks that exist but aren't referenced
+        let mut orphan_anchors: Vec<String> = Vec::new();
+        if let Some(db) = &self.index_db {
+            let all_links = db.get_all_links().unwrap_or_default();
+            let mut referenced_hooks: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+
+            for (_chapter, href) in &all_links {
+                if let Some(hook) = href.strip_prefix('#') {
+                    referenced_hooks.insert(hook.to_string());
+                } else if let Some(pos) = href.find('#') {
+                    referenced_hooks.insert(href[pos + 1..].to_string());
+                }
+            }
+
+            // Build hook index from all manifest XHTML items to find declared anchors
+            let hook_index = self.build_hook_index().unwrap_or_default();
+
+            for hooks in hook_index.values() {
+                for hook in hooks {
+                    if !referenced_hooks.contains(&hook.hook_id) {
+                        let full = format!("{}#{}", hook.file_href, hook.hook_id);
+                        orphan_anchors.push(full);
+                    }
+                }
+            }
+        }
+
+        Ok(EpubHealthReport {
+            broken_links,
+            orphan_anchors,
+            missing_manifest_entries,
+            opf_well_formed,
+        })
+    }
+
+    /// Alias de [`validate`](Self::validate) — reporte completo de salud estructural del EPUB.
+    ///
+    /// Devuelve un `EpubHealthReport` con enlaces rotos, anclajes huérfanos,
+    /// entradas faltantes en el manifiesto y estado del OPF.
+    pub fn get_health_report(&self) -> Result<EpubHealthReport> {
+        self.validate()
+    }
+
     /// Agrega un documento nuevo al proyecto (sanitiza, escribe y registra en manifiesto)
     ///
     /// Este es el método principal para crear nuevos capítulos. Automáticamente:
@@ -828,6 +974,26 @@ mod tests {
         assert!(!core.manifest.contains_key("chap1"));
         assert!(!chap1_path.exists());
         assert!(!core.spine.contains(&"chap1".to_string()));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_delete_items_and_save_persists_manifest_before_file_removal() -> Result<()> {
+        let dir = tempdir()?;
+        let mut core = GutenCore::new_project(dir.path(), "Delete Batch Test", "en")?;
+        core.add_document("extra", "<h1>Extra</h1><p>Content</p>")?;
+
+        let extra_path = core.get_resource_path("extra")?;
+        assert!(extra_path.exists());
+        assert!(core.manifest.contains_key("extra"));
+
+        core.delete_items_and_save(["extra"])?;
+
+        assert!(!extra_path.exists());
+        let reloaded = GutenCore::open_folder(dir.path())?;
+        assert!(!reloaded.manifest.contains_key("extra"));
+        assert!(!reloaded.spine.contains(&"extra".to_string()));
 
         Ok(())
     }

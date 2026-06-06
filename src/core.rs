@@ -12,8 +12,10 @@
 use crate::error::{GutenError, Result};
 use crate::types::*;
 use chrono::{SecondsFormat, Utc};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// Namespace OPF (Open Packaging Format) - elemento raíz de content.opf
@@ -130,6 +132,22 @@ pub struct GutenCore {
     /// `true` si el último `save_chapter` no pudo actualizar el índice SQLite.
     /// La UI puede usarlo para mostrar un aviso y llamar a `build_index()`.
     pub index_dirty: bool,
+
+    /// Directorio temporal que mantiene vivo el EPUB extraído.
+    /// Cuando se usa `open_epub()`, el ZIP se descomprime aquí.
+    /// Al droppear `GutenCore`, este directorio se elimina automáticamente.
+    pub(crate) _temp_dir: Option<tempfile::TempDir>,
+
+    /// Hash SHA-256 del archivo .epub original (calculado en `open_epub`).
+    /// Pensado para deduplicación y verificación de integridad.
+    pub file_hash: Option<String>,
+
+    /// Ruta al archivo .epub original (si se abrió con `open_epub`).
+    pub original_epub: Option<PathBuf>,
+
+    /// ID del item de imagen de portada según convención EPUB 2
+    /// (`<meta name="cover" content="id"/>` en el OPF).
+    pub(crate) cover_image_id: Option<String>,
 }
 
 impl GutenCore {
@@ -208,6 +226,10 @@ impl GutenCore {
             config: GutenConfig::default(),
             index_db: None,
             index_dirty: false,
+            _temp_dir: None,
+            file_hash: None,
+            original_epub: None,
+            cover_image_id: None,
         }
     }
 
@@ -283,6 +305,75 @@ impl GutenCore {
         core.parse_opf()?;
         core.load_config()?;
         core.build_index()?;
+        Ok(core)
+    }
+
+    /// Abre una carpeta existente como proyecto EPUB sin construir el índice SQLite.
+    ///
+    /// Igual que [`open_folder`](Self::open_folder) pero omite el paso de indexación
+    /// (construcción de la base de datos FTS5). Útil para operaciones que solo necesitan
+    /// leer el manifiesto, spine o metadatos sin incurrir en el costo de indexar todos
+    /// los archivos XHTML.
+    ///
+    /// La indexación puede realizarse más tarde llamando a [`build_index`](Self::build_index)
+    /// explícitamente si se necesita búsqueda de texto completo o validación de enlaces.
+    pub fn open_folder_quick(workdir: impl AsRef<Path>) -> Result<Self> {
+        let mut core = Self::new(workdir);
+        core.load_container_and_opf()?;
+        core.parse_opf()?;
+        core.load_config()?;
+        Ok(core)
+    }
+
+    /// Abre un archivo .epub directamente, descomprimiéndolo en un directorio temporal.
+    ///
+    /// Este método extrae el EPUB a un directorio temporal, lo carga como proyecto
+    /// y mantiene el directorio temporal vivo mientras exista la instancia de `GutenCore`.
+    /// Al droppear la instancia, el directorio temporal se elimina automáticamente.
+    ///
+    /// Además, calcula el hash SHA-256 del archivo original para permitir
+    /// deduplicación a nivel de aplicación.
+    ///
+    /// # Argumentos
+    ///
+    /// * `path` - Ruta al archivo `.epub`
+    ///
+    /// # Retorna
+    ///
+    /// * `Result<Self>` - Instancia de `GutenCore` con el EPUB cargado
+    pub fn open_epub(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref().to_path_buf();
+        if !path.exists() {
+            return Err(GutenError::InvalidProject(format!(
+                "EPUB file not found: {}",
+                path.display()
+            )));
+        }
+
+        // Calculate SHA-256 hash while reading the file
+        let mut file = std::fs::File::open(&path)?;
+        let mut hasher = Sha256::new();
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer)?;
+        hasher.update(&buffer);
+        let hash = format!("{:x}", hasher.finalize());
+
+        // Extract to temp dir
+        let temp_dir = tempfile::tempdir().map_err(|e| {
+            GutenError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
+        })?;
+        let cursor = std::io::Cursor::new(buffer);
+        let mut archive = zip::ZipArchive::new(cursor)?;
+        archive.extract(temp_dir.path())?;
+
+        // Load from the temp dir
+        let mut core = Self::open_folder(temp_dir.path())?;
+
+        // Store temp_dir to keep it alive, file_hash, and original path
+        core._temp_dir = Some(temp_dir);
+        core.file_hash = Some(hash);
+        core.original_epub = Some(path);
+
         Ok(core)
     }
 
@@ -1088,6 +1179,12 @@ impl GutenCore {
             .map(|n| n.text().unwrap_or("").to_string())
             .unwrap_or_else(|| "Untitled".to_string());
 
+        let author = metadata_node
+            .children()
+            .find(|n| n.has_tag_name((NS_DC, "creator")))
+            .map(|n| n.text().unwrap_or("").trim().to_string())
+            .filter(|s| !s.is_empty());
+
         let language = metadata_node
             .children()
             .find(|n| n.has_tag_name((NS_DC, "language")))
@@ -1109,11 +1206,97 @@ impl GutenCore {
             .map(|n| n.text().unwrap_or("").to_string())
             .unwrap_or_else(|| Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true));
 
+        let description = metadata_node
+            .children()
+            .find(|n| n.has_tag_name((NS_DC, "description")))
+            .map(|n| n.text().unwrap_or("").trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        let tags: Vec<String> = metadata_node
+            .children()
+            .filter(|n| n.has_tag_name((NS_DC, "subject")))
+            .filter_map(|n| {
+                let text = n.text().unwrap_or("").trim().to_string();
+                if text.is_empty() { None } else { Some(text) }
+            })
+            .collect();
+
+        // Parse series metadata (calibre convention)
+        let series = metadata_node
+            .children()
+            .find(|n| {
+                n.has_tag_name((NS_OPF, "meta"))
+                    && (n.attribute("name") == Some("calibre:series")
+                        || n.attribute("property") == Some("calibre:series"))
+            })
+            .and_then(|n| n.attribute("content"))
+            .map(|s| s.to_string())
+            .filter(|s| !s.is_empty());
+
+        let series_index: Option<f32> = metadata_node
+            .children()
+            .find(|n| {
+                n.has_tag_name((NS_OPF, "meta"))
+                    && (n.attribute("name") == Some("calibre:series_index")
+                        || n.attribute("property") == Some("calibre:series_index"))
+            })
+            .and_then(|n| n.attribute("content"))
+            .and_then(|s| s.parse::<f32>().ok());
+
+        // Capture custom meta elements (rubrica:*, etc.) that aren't part of known metadata
+        let known_meta: HashSet<&str> = [
+            "dcterms:modified",
+            "calibre:series",
+            "calibre:series_index",
+        ]
+        .iter()
+        .cloned()
+        .collect();
+
+        let mut custom_meta: HashMap<String, String> = HashMap::new();
+        for meta in metadata_node
+            .children()
+            .filter(|n| n.has_tag_name((NS_OPF, "meta")))
+        {
+            let key = meta
+                .attribute("property")
+                .or_else(|| meta.attribute("name"))
+                .unwrap_or("");
+            if !key.is_empty() && !known_meta.contains(key) {
+                let value = meta
+                    .attribute("content")
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| meta.text().unwrap_or("").to_string());
+                if !value.is_empty() {
+                    custom_meta.insert(key.to_string(), value);
+                }
+            }
+        }
+
+        // EPUB 2 cover: <meta name="cover" content="id"/>
+        let epub2_cover_id = metadata_node
+            .children()
+            .find(|n| {
+                n.has_tag_name((NS_OPF, "meta"))
+                    && n.attribute("name") == Some("cover")
+            })
+            .and_then(|n| n.attribute("content"))
+            .map(|s| s.to_string())
+            .filter(|s| !s.is_empty());
+
+        self.cover_image_id = epub2_cover_id;
+
         self.metadata = Some(BookMetadata {
             title,
+            author,
             language,
             identifier,
             modified,
+            series,
+            series_index,
+            tags,
+            description,
+            custom_meta,
         });
 
         // Manifest
@@ -1325,10 +1508,7 @@ impl GutenCore {
             .clone()
             .ok_or_else(|| GutenError::InvalidProject("OPF path not loaded".to_string()))?;
 
-        // 1. Sync Nav (TOC) automatically
-        self.update_nav()?;
-
-        // 2. Update modified date before saving
+        // 1. Update modified date before saving
         self.update_modified_date();
         let metadata = self
             .metadata
@@ -1370,10 +1550,77 @@ impl GutenCore {
         writer.write_event(Event::Text(BytesText::new(&metadata.title)))?;
         writer.write_event(Event::End(BytesEnd::new("dc:title")))?;
 
+        //     dc:creator (author)
+        if let Some(ref author) = metadata.author {
+            writer.write_event(Event::Start(BytesStart::new("dc:creator")))?;
+            writer.write_event(Event::Text(BytesText::new(author.as_str())))?;
+            writer.write_event(Event::End(BytesEnd::new("dc:creator")))?;
+        }
+
         //     dc:language
         writer.write_event(Event::Start(BytesStart::new("dc:language")))?;
         writer.write_event(Event::Text(BytesText::new(&metadata.language)))?;
         writer.write_event(Event::End(BytesEnd::new("dc:language")))?;
+
+        //     dc:description
+        if let Some(ref desc) = metadata.description {
+            writer.write_event(Event::Start(BytesStart::new("dc:description")))?;
+            writer.write_event(Event::Text(BytesText::new(desc.as_str())))?;
+            writer.write_event(Event::End(BytesEnd::new("dc:description")))?;
+        }
+
+        //     dc:subject (tags)
+        for tag in &metadata.tags {
+            writer.write_event(Event::Start(BytesStart::new("dc:subject")))?;
+            writer.write_event(Event::Text(BytesText::new(tag.as_str())))?;
+            writer.write_event(Event::End(BytesEnd::new("dc:subject")))?;
+        }
+
+        //     calibre:series
+        if let Some(ref series) = metadata.series {
+            let mut ser_start = BytesStart::new("meta");
+            ser_start.push_attribute(("name", "calibre:series"));
+            ser_start.push_attribute(("content", series.as_str()));
+            writer.write_event(Event::Empty(ser_start))?;
+        }
+
+        //     calibre:series_index
+        if let Some(idx) = metadata.series_index {
+            let mut idx_start = BytesStart::new("meta");
+            idx_start.push_attribute(("name", "calibre:series_index"));
+            idx_start.push_attribute(("content", format!("{:.1}", idx).as_str()));
+            writer.write_event(Event::Empty(idx_start))?;
+        }
+
+        //     custom meta (rubrica:*, etc.)
+        let mut sorted_custom: Vec<_> = metadata.custom_meta.iter().collect();
+        sorted_custom.sort_by(|a, b| a.0.cmp(b.0));
+        for (key, value) in sorted_custom {
+            let mut cm = BytesStart::new("meta");
+            if key.starts_with("rubrica:") {
+                cm.push_attribute(("property", key.as_str()));
+            } else {
+                cm.push_attribute(("name", key.as_str()));
+            }
+            cm.push_attribute(("content", value.as_str()));
+            writer.write_event(Event::Empty(cm))?;
+        }
+
+        //     EPUB 2 cover (only if no EPUB 3 cover-image in manifest)
+        let has_epub3_cover = self
+            .manifest
+            .values()
+            .any(|it| it.properties == "cover-image");
+        if !has_epub3_cover {
+            if let Some(ref cover_id) = self.cover_image_id {
+                if self.manifest.contains_key(cover_id) {
+                    let mut cov = BytesStart::new("meta");
+                    cov.push_attribute(("name", "cover"));
+                    cov.push_attribute(("content", cover_id.as_str()));
+                    writer.write_event(Event::Empty(cov))?;
+                }
+            }
+        }
 
         //     dcterms:modified
         let mut mod_start = BytesStart::new("meta");
@@ -1563,8 +1810,12 @@ impl GutenCore {
         for idref in &self.spine {
             if let Some(item) = self.manifest.get(idref) {
                 if item.media_type == "application/xhtml+xml" {
-                    let doc_toc = self.scan_headings(&item.href)?;
-                    nav_items.push(doc_toc);
+                    match self.scan_headings(&item.href) {
+                        Ok(doc_toc) => nav_items.push(doc_toc),
+                        Err(_) => {
+                            // File missing or unparseable — skip this item in the TOC
+                        }
+                    }
                 }
             }
         }
@@ -2349,6 +2600,86 @@ impl GutenCore {
             }
         }
         Ok(())
+    }
+
+    /// Devuelve el hash SHA-256 del archivo .epub original, si fue abierto con `open_epub`.
+    ///
+    /// Útil para deduplicación a nivel de aplicación (comparar hashes entre múltiples libros).
+    pub fn file_hash(&self) -> Option<&str> {
+        self.file_hash.as_deref()
+    }
+
+    /// Reorganiza el proyecto EPUB en disco según el esquema de carpetas indicado.
+    ///
+    /// Exporta el EPUB a `dest/{Autor}/{Serie}/{Título}.epub` (o la variante según el schema).
+    /// Crea los directorios intermedios automáticamente.
+    ///
+    /// # Esquemas disponibles
+    ///
+    /// - `AuthorSeriesTitle` → `dest/Autor/Serie/Título.epub`
+    /// - `AuthorTitle` → `dest/Autor/Título.epub`
+    /// - `Flat` → `dest/Título.epub`
+    ///
+    /// # Argumentos
+    ///
+    /// * `schema` - Esquema de organización de carpetas
+    /// * `dest` - Directorio base donde se creará la estructura
+    ///
+    /// # Retorna
+    ///
+    /// La ruta absoluta al archivo `.epub` resultante.
+    pub fn reorganize(&mut self, schema: FolderSchema, dest: &Path) -> Result<PathBuf> {
+        let metadata = self
+            .metadata
+            .as_ref()
+            .ok_or_else(|| GutenError::InvalidProject("No metadata loaded".to_string()))?;
+
+        let safe_name = |s: &str| -> String {
+            s.chars()
+                .map(|c| {
+                    if c.is_alphanumeric() || c == ' ' || c == '-' || c == '_' || c == '.' {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
+                .collect::<String>()
+                .trim()
+                .to_string()
+        };
+
+        let title_str = safe_name(&metadata.title);
+        let author_str = metadata
+            .author
+            .as_ref()
+            .map(|a| safe_name(a))
+            .unwrap_or_else(|| "Unknown".to_string());
+        let series_str = metadata.series.as_ref().map(|s| safe_name(s));
+
+        let rel_path = match schema {
+            FolderSchema::AuthorSeriesTitle => {
+                if let Some(ref ser) = series_str {
+                    Path::new(&author_str).join(ser).join(format!("{}.epub", title_str))
+                } else {
+                    Path::new(&author_str).join(format!("{}.epub", title_str))
+                }
+            }
+            FolderSchema::AuthorTitle => {
+                Path::new(&author_str).join(format!("{}.epub", title_str))
+            }
+            FolderSchema::Flat => {
+                PathBuf::from(format!("{}.epub", title_str))
+            }
+        };
+
+        let target = dest.join(&rel_path);
+
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        self.export_epub(&target)?;
+        Ok(target)
     }
 }
 

@@ -23,8 +23,6 @@ impl GutenCore {
     ///     println!("Idioma: {}", metadata.language);
     ///     println!("Identificador: {}", metadata.identifier);
     ///     println!("Última modificación: {}", metadata.modified);
-    /// } else {
-    ///     println!("No hay metadatos cargados");
     /// }
     /// # Ok(())
     /// # }
@@ -36,6 +34,12 @@ impl GutenCore {
     ///
     pub fn get_metadata(&self) -> Option<&BookMetadata> {
         self.metadata.as_ref()
+    }
+
+    /// Alias semántico de [`get_metadata`](Self::get_metadata) que expone todos los metadatos
+    /// extendidos (autor, serie, etiquetas, descripción, metadatos custom, etc.).
+    pub fn get_extended_metadata(&self) -> Option<&BookMetadata> {
+        self.get_metadata()
     }
 
     /// Actualiza selectivamente los metadatos del libro
@@ -138,6 +142,67 @@ impl GutenCore {
             }
             if let Some(i) = identifier {
                 md.identifier = i;
+                changed = true;
+            }
+
+            if changed {
+                md.modified = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
+            }
+        }
+    }
+
+    /// Actualiza selectivamente los metadatos extendidos del libro
+    ///
+    /// Permite modificar autor, serie, índice de serie, etiquetas, descripción
+    /// y metadatos custom con prefijo (ej: `rubrica:source`).
+    /// Solo los campos proporcionados (`Some(...)`) se actualizan;
+    /// los campos `None` se ignoran y mantienen su valor actual.
+    ///
+    /// Para eliminar un campo, pasa `Some("".to_string())` (se convertirá en `None`)
+    /// en `author`, `series`, o `Some(vec![])` en `tags`.
+    ///
+    /// # Argumentos
+    ///
+    /// * `author` - Nombre del autor (`None` = no cambiar)
+    /// * `series` - Nombre de la serie (`None` = no cambiar)
+    /// * `series_index` - Índice en la serie (`None` = no cambiar)
+    /// * `tags` - Lista de etiquetas/temas (`None` = no cambiar)
+    /// * `description` - Descripción del libro (`None` = no cambiar)
+    /// * `custom_meta` - Metadatos custom (ej: `rubrica:source`) (`None` = no cambiar)
+    pub fn set_extended_metadata(
+        &mut self,
+        author: Option<String>,
+        series: Option<String>,
+        series_index: Option<f32>,
+        tags: Option<Vec<String>>,
+        description: Option<String>,
+        custom_meta: Option<std::collections::HashMap<String, String>>,
+    ) {
+        if let Some(ref mut md) = self.metadata {
+            let mut changed = false;
+
+            if let Some(a) = author {
+                md.author = if a.is_empty() { None } else { Some(a) };
+                changed = true;
+            }
+            if let Some(s) = series {
+                md.series = if s.is_empty() { None } else { Some(s) };
+                changed = true;
+            }
+            if let Some(i) = series_index {
+                md.series_index = Some(i);
+                changed = true;
+            }
+            if let Some(t) = tags {
+                md.tags = t;
+                changed = true;
+            }
+            if let Some(d) = description {
+                md.description = if d.is_empty() { None } else { Some(d) };
+                changed = true;
+            }
+            if let Some(c) = custom_meta {
+                md.custom_meta = c;
                 changed = true;
             }
 

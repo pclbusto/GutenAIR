@@ -1,6 +1,6 @@
 use crate::core::GutenCore;
 use crate::error::Result;
-use crate::types::{DocToc, HeadingItem};
+use crate::types::{DocToc, HeadingItem, TocEntry};
 use path_slash::PathExt;
 use std::fs;
 
@@ -140,6 +140,244 @@ impl GutenCore {
         Ok(full_data)
     }
 
+    /// Extrae la tabla de contenidos unificada, leyendo tanto `toc.ncx` (EPUB2)
+    /// como `nav.xhtml` (EPUB3) y devolviendo una lista plana de entradas.
+    ///
+    /// Primero intenta parsear `toc.ncx` si existe en el manifiesto.
+    /// Si no hay NCX, extrae los enlaces del `<nav epub:type="toc">` en `nav.xhtml`.
+    /// Como último recurso, construye la TOC a partir de los encabezados del spine.
+    ///
+    /// # Retorna
+    ///
+    /// * `Result<Vec<TocEntry>>` - Lista de entradas con título, href y nivel de profundidad
+    pub fn get_toc(&self) -> Result<Vec<TocEntry>> {
+        // 1. Try toc.ncx (EPUB2)
+        if let Some(entries) = self.parse_ncx_toc()? {
+            return Ok(entries);
+        }
+
+        // 2. Try nav.xhtml EPUB3 toc
+        if let Some(entries) = self.parse_nav_toc()? {
+            return Ok(entries);
+        }
+
+        // 3. Fallback: build from spine headings
+        let full_data = self.get_full_toc_data()?;
+        let mut entries = Vec::new();
+
+        let nav_dir = std::path::Path::new("Text");
+        for doc in &full_data {
+            let doc_path = std::path::Path::new(&doc.href);
+            let rel = pathdiff::diff_paths(doc_path, nav_dir)
+                .unwrap_or_else(|| doc_path.to_path_buf());
+            let rel_str = rel.to_string_lossy();
+
+            for heading in &doc.items {
+                let href = if heading.anchor.is_empty() {
+                    rel_str.to_string()
+                } else {
+                    format!("{}#{}", rel_str, heading.anchor)
+                };
+                entries.push(TocEntry {
+                    title: heading.title.clone(),
+                    href,
+                    level: heading.level,
+                });
+            }
+        }
+
+        Ok(entries)
+    }
+
+    /// Intenta parsear `toc.ncx` (EPUB2) y devuelve las entradas de TOC.
+    fn parse_ncx_toc(&self) -> Result<Option<Vec<TocEntry>>> {
+        let ncx_item = self
+            .manifest
+            .values()
+            .find(|it| it.media_type == "application/x-dtbncx+xml");
+
+        let ncx_item = match ncx_item {
+            Some(item) => item,
+            None => return Ok(None),
+        };
+
+        let opf_dir = self
+            .opf_dir
+            .as_ref()
+            .ok_or_else(|| crate::error::GutenError::InvalidProject("OPF dir not set".to_string()))?;
+
+        let ncx_path = opf_dir.join(&ncx_item.href);
+        if !ncx_path.exists() {
+            return Ok(None);
+        }
+
+        let content = fs::read_to_string(&ncx_path)?;
+        // Strip DTD — roxmltree doesn't support it
+        let clean = self.strip_dtd(&content);
+        let doc = roxmltree::Document::parse(&clean).map_err(|e| {
+            crate::error::GutenError::InvalidProject(format!("XML error in toc.ncx: {}", e))
+        })?;
+
+        let ncx_dir = ncx_path.parent().unwrap();
+        let mut entries = Vec::new();
+
+        for nav_point in doc.descendants().filter(|n| n.has_tag_name("navPoint")) {
+            // Level = nesting depth (1 + number of navPoint ancestors)
+            let level = nav_point
+                .ancestors()
+                .filter(|n| n.has_tag_name("navPoint"))
+                .count() as u8
+                + 1;
+
+            let mut title = String::new();
+            let mut href = String::new();
+
+            for child in nav_point.children() {
+                match child.tag_name().name() {
+                    "navLabel" => {
+                        if let Some(text_node) = child
+                            .children()
+                            .find(|n| n.has_tag_name("text"))
+                        {
+                            title = text_node.text().unwrap_or("").trim().to_string();
+                        }
+                    }
+                    "content" => {
+                        let src = child.attribute("src").unwrap_or("");
+                        // Resolve relative to the NCX directory
+                        let src_path = std::path::Path::new(src);
+                        let resolved = ncx_dir.join(src_path);
+                        if let Ok(rel) = resolved.strip_prefix(opf_dir) {
+                            href = rel.to_string_lossy().replace('\\', "/");
+                        } else {
+                            href = src.to_string();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            if !title.is_empty() && !href.is_empty() {
+                entries.push(TocEntry {
+                    title,
+                    href,
+                    level,
+                });
+            }
+        }
+
+        if entries.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(entries))
+        }
+    }
+
+    /// Intenta parsear `nav.xhtml` (EPUB3) y extraer las entradas del TOC.
+    fn parse_nav_toc(&self) -> Result<Option<Vec<TocEntry>>> {
+        let nav_item = self
+            .manifest
+            .values()
+            .find(|it| it.properties.contains("nav"));
+
+        let nav_item = match nav_item {
+            Some(item) => item,
+            None => return Ok(None),
+        };
+
+        let opf_dir = self
+            .opf_dir
+            .as_ref()
+            .ok_or_else(|| crate::error::GutenError::InvalidProject("OPF dir not set".to_string()))?;
+
+        let nav_path = opf_dir.join(&nav_item.href);
+        if !nav_path.exists() {
+            return Ok(None);
+        }
+
+        let content = fs::read_to_string(&nav_path)?;
+
+        // Strip DTD
+        let clean = if let Some(start) = content.find("<!DOCTYPE") {
+            if let Some(end) = content[start..].find('>') {
+                let mut s = content.clone();
+                s.replace_range(start..start + end + 1, "");
+                s
+            } else {
+                content
+            }
+        } else {
+            content
+        };
+
+        let doc = roxmltree::Document::parse(&clean).map_err(|e| {
+            crate::error::GutenError::InvalidProject(format!("XML error in nav.xhtml: {}", e))
+        })?;
+
+        // Find <nav epub:type="toc">
+        let toc_nav = doc
+            .descendants()
+            .find(|n| {
+                n.has_tag_name("nav")
+                    && n.attribute("type") == Some("toc")
+            });
+
+        let toc_nav = match toc_nav {
+            Some(n) => n,
+            None => return Ok(None),
+        };
+
+        let nav_dir = nav_path.parent().unwrap();
+        let mut entries = Vec::new();
+
+        // Recursively collect <a> elements preserving nesting level
+        self.collect_nav_links(toc_nav, nav_dir, opf_dir, 1, &mut entries);
+
+        if entries.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(entries))
+        }
+    }
+
+    /// Recolecta recursivamente enlaces `<a>` del árbol de navegación EPUB3.
+    fn collect_nav_links(
+        &self,
+        node: roxmltree::Node,
+        nav_dir: &std::path::Path,
+        opf_dir: &std::path::Path,
+        base_level: u8,
+        entries: &mut Vec<TocEntry>,
+    ) {
+        for child in node.children() {
+            if child.has_tag_name("a") {
+                if let Some(href) = child.attribute("href") {
+                    let title = child.text().unwrap_or("").trim().to_string();
+                    if !title.is_empty() {
+                        // Resolve relative to the nav directory
+                        let href_path = std::path::Path::new(href);
+                        let resolved = nav_dir.join(href_path);
+                        let href_str = if let Ok(rel) = resolved.strip_prefix(opf_dir) {
+                            rel.to_string_lossy().replace('\\', "/")
+                        } else {
+                            href.to_string()
+                        };
+                        entries.push(TocEntry {
+                            title,
+                            href: href_str,
+                            level: base_level,
+                        });
+                    }
+                }
+            }
+            if child.has_tag_name("ol") || child.has_tag_name("ul") {
+                self.collect_nav_links(child, nav_dir, opf_dir, base_level + 1, entries);
+            } else {
+                self.collect_nav_links(child, nav_dir, opf_dir, base_level, entries);
+            }
+        }
+    }
+
     /// Construye el archivo nav.xhtml basándose en una selección personalizada de datos.
     ///
     /// Este método permite un control total sobre el índice del libro. El usuario puede
@@ -247,6 +485,11 @@ impl GutenCore {
                 "nav".to_string(),
             )?;
         } else if let Some(item) = self.manifest.get_mut(nav_id) {
+            if item.href != nav_href {
+                let old_path = opf_dir.join(&item.href);
+                let _ = fs::remove_file(old_path);
+                item.href = nav_href.to_string();
+            }
             item.properties = "nav".to_string();
         }
 

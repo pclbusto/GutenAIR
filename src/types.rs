@@ -27,9 +27,17 @@ pub struct DocToc {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BookMetadata {
     pub title: String,
+    pub author: Option<String>,
     pub language: String,
     pub identifier: String,
     pub modified: String,
+    pub series: Option<String>,
+    pub series_index: Option<f32>,
+    pub tags: Vec<String>,
+    pub description: Option<String>,
+    /// Metadatos custom con prefijo (ej: `rubrica:source`, `rubrica:imported_at`).
+    /// Clave = nombre completo del atributo property/name, valor = contenido.
+    pub custom_meta: std::collections::HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,4 +96,36 @@ impl Default for GutenConfig {
             editor_state: std::collections::HashMap::new(),
         }
     }
+}
+
+/// Entrada unificada de tabla de contenidos (EPUB2 toc.ncx + EPUB3 nav.xhtml)
+#[derive(Debug, Clone)]
+pub struct TocEntry {
+    pub title: String,
+    pub href: String,
+    pub level: u8,
+}
+
+/// Esquema de organización de carpetas para reorganizar un EPUB en disco
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FolderSchema {
+    /// Author/Series/Title.epub
+    AuthorSeriesTitle,
+    /// Author/Title.epub
+    AuthorTitle,
+    /// Title.epub
+    Flat,
+}
+
+/// Reporte completo de salud estructural de un EPUB
+#[derive(Debug, Clone)]
+pub struct EpubHealthReport {
+    /// Lista de (from_chapter, href) con enlaces rotos
+    pub broken_links: Vec<(String, String)>,
+    /// Anclajes (id) huérfanos que no son referenciados por ningún enlace
+    pub orphan_anchors: Vec<String>,
+    /// Entradas en el manifiesto que apuntan a archivos inexistentes
+    pub missing_manifest_entries: Vec<String>,
+    /// true si el OPF está bien formado y es parseable
+    pub opf_well_formed: bool,
 }

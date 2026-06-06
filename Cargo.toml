@@ -44,5 +44,8 @@ pulldown-cmark = "0.13.3"
 # SQLite structural index
 rusqlite = { version = "0.31", features = ["bundled"] }
 
-[dev-dependencies]
+# SHA-256 hashing for file deduplication
+sha2 = "0.10"
+
+# Temp directories for epub extraction
 tempfile = "3.10"

@@ -508,6 +508,7 @@ impl GutenCore {
         // 1. Strip dangerous tags/JS but allow standard attributes like class and id
         let cleaned = ammonia::Builder::default()
             .add_generic_attributes(&["class", "id", "title"])
+            .add_tags(&["html", "head", "body", "title", "meta", "link"])
             .clean(html)
             .to_string();
 
